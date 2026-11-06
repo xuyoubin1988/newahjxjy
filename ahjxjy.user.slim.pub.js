@@ -22,7 +22,7 @@
 // @connect      fa.ahsxks.com
 // @run-at       document-start
 // @icon         https://huaweicloudobs.ahjxjy.cn/895789f9086469785b846d30c0ed95f9.png
-// @require      https://con.ahzsksw.com/spark-md5.min.js
+// @require      https://cdn.jsdelivr.net/npm/spark-md5@3.0.2/spark-md5.min.js
 // @license      All Rights Reserved
 // ==/UserScript==
 
