@@ -1,58 +1,291 @@
 // ==UserScript==
 // @name         安徽继续教育在线新平台助手
-// @namespace    https://www.wlxy.top
-// @version      4.2
-// @description  仅支持2026级学生安徽继续教育在线，自动完成未完成课程和作业,期末考试答题题库AI辅助系统，安徽继续教育在线新园区，效率模式和超安全1:1真人时长模式自选，安全稳定
+// @namespace    https://www.wlxy.live
+// @version      5.5
+// @description  支持2026级学生安徽继续教育在线，自动完成未完成课程和作业,期末考试答题题库AI辅助系统，安徽继续教育在线新园区，效率模式和超安全1:1真人时长模式自选，安全稳定
 // @author       柠檬真酸
+// @antifeature  payment  免费体验6章节，升级Pro不限章节
+// @antifeature  membership  需云端授权
 // @match        https://jxjynew.ahjxjy.cn/*
 // @match        https://main.ahjxjy.cn/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_openInTab
+// @connect      oa1.ahzsksw.cn
+// @connect      oa888.ahzsksw.cn
+// @connect      ocr.ahzsksw.cn
+// @connect      con.ahzsksw.com
 // @connect      obs.cn-north-4.myhuaweicloud.com
 // @connect      frs-bucket-main.obs.cn-north-4.myhuaweicloud.com
 // @connect      frs.ahjxjy.cn
-// @connect      ocr.ahzsksw.cn
 // @connect      huaweicloudobs.ahjxjy.cn
-// @connect      *
+// @connect      *.ahjxjy.cn
+// @connect      fa.ahsxks.com
 // @run-at       document-start
 // @icon         https://huaweicloudobs.ahjxjy.cn/895789f9086469785b846d30c0ed95f9.png
-// @license  柠檬真酸
-// @require      https://cdn.jsdelivr.net/npm/spark-md5@3.0.2/spark-md5.min.js
+// @require      https://con.ahzsksw.com/spark-md5.min.js
+// @license      All Rights Reserved
 // ==/UserScript==
 
+  (function bindOa888GlobalImportantNotice() {
+    const GLOBAL_NOTICE_JSON =
+      "https://oa888.ahzsksw.cn/api/global/important-notice.json";
+    const HOST_ID = "oa888-global-bubble-host";
+    const DISMISS_KEY = "oa888_global_notice_dismiss_v2";
+
+    function gmGet(url) {
+      return new Promise((resolve, reject) => {
+        const g =
+          typeof GM_xmlhttpRequest === "function"
+            ? GM_xmlhttpRequest
+            : typeof GM !== "undefined" && GM.xmlHttpRequest
+              ? GM.xmlHttpRequest.bind(GM)
+              : null;
+        if (!g) {
+          fetch(url, { cache: "no-store" })
+            .then((r) => r.text())
+            .then(resolve)
+            .catch(reject);
+          return;
+        }
+        g({
+          method: "GET",
+          url,
+          anonymous: true,
+          onload: (res) => {
+            if (res.status >= 200 && res.status < 300) resolve(String(res.responseText || ""));
+            else reject(new Error("HTTP " + res.status));
+          },
+          onerror: () => reject(new Error("network")),
+        });
+      });
+    }
+
+    function sanitizeHtml(html) {
+      const tpl = document.createElement("template");
+      tpl.innerHTML = String(html || "");
+      const allowed = new Set([
+        "A", "B", "STRONG", "EM", "I", "U", "BR", "P", "SPAN", "DIV",
+        "UL", "OL", "LI", "H3", "H4", "SMALL", "CODE",
+      ]);
+      const walk = (node) => {
+        const kids = Array.from(node.childNodes);
+        for (const child of kids) {
+          if (child.nodeType === 1) {
+            const el = child;
+            if (!allowed.has(el.tagName)) {
+              while (el.firstChild) el.parentNode.insertBefore(el.firstChild, el);
+              el.remove();
+              continue;
+            }
+            for (const attr of Array.from(el.attributes)) {
+              const n = attr.name.toLowerCase();
+              if (n.startsWith("on") || n === "style" || n === "src" || n === "srcdoc") {
+                el.removeAttribute(attr.name);
+                continue;
+              }
+              if (el.tagName === "A") {
+                if (n === "href") {
+                  const href = String(el.getAttribute("href") || "").trim();
+                  if (!/^https?:\/\//i.test(href) && !/^mailto:/i.test(href)) {
+                    el.removeAttribute("href");
+                  } else {
+                    el.setAttribute("target", "_blank");
+                    el.setAttribute("rel", "noopener noreferrer");
+                  }
+                } else if (n !== "target" && n !== "rel") {
+                  el.removeAttribute(attr.name);
+                }
+              } else {
+                el.removeAttribute(attr.name);
+              }
+            }
+            walk(el);
+          } else if (child.nodeType === 8) {
+            child.remove();
+          }
+        }
+      };
+      walk(tpl.content);
+      return tpl.innerHTML;
+    }
+
+    function hashText(s) {
+      let h = 0;
+      const str = String(s || "");
+      for (let i = 0; i < str.length; i++) h = ((h << 5) - h + str.charCodeAt(i)) | 0;
+      return String(h);
+    }
+
+    function findPanelRoot() {
+      const anchors = document.querySelectorAll(
+        "[id$='-ann-text'], .qingshu-ann, .gs-ann, .hbut-ann, .rjpx-ann, .zkzx-ann, .jxjy-ann, [class*='-ann'], [id*='panel'], [class*='panel']"
+      );
+      for (const a of anchors) {
+        let el = a;
+        for (let i = 0; i < 8 && el; i++) {
+          const st = window.getComputedStyle(el);
+          if (
+            (st.position === "fixed" || st.position === "absolute") &&
+            el.offsetWidth > 180 &&
+            el.offsetHeight > 80
+          ) {
+            return el;
+          }
+          el = el.parentElement;
+        }
+      }
+      const fixed = Array.from(document.querySelectorAll("div")).find((d) => {
+        const st = window.getComputedStyle(d);
+        return (
+          st.position === "fixed" &&
+          d.offsetWidth > 220 &&
+          d.offsetHeight > 120 &&
+          d.offsetWidth < 520
+        );
+      });
+      return fixed || document.body;
+    }
+
+    function removeOldBanner() {
+      const old = document.getElementById("oa888-global-ann");
+      if (old) old.remove();
+    }
+
+    function showBubble(html) {
+      removeOldBanner();
+      const clean = sanitizeHtml(html).trim();
+      if (!clean) return;
+      const sig = hashText(clean);
+      try {
+        if (sessionStorage.getItem(DISMISS_KEY) === sig) return;
+      } catch (_) {}
+
+      let host = document.getElementById(HOST_ID);
+      if (!host) {
+        host = document.createElement("div");
+        host.id = HOST_ID;
+        const root = findPanelRoot();
+        const st = window.getComputedStyle(root);
+        if (st.position === "static") root.style.position = "relative";
+        root.appendChild(host);
+      }
+
+      host.innerHTML = "";
+      host.style.cssText =
+        "position:absolute;inset:0;z-index:2147483000;pointer-events:none;display:flex;align-items:flex-start;justify-content:center;padding:14px 12px 0;";
+
+      const mask = document.createElement("div");
+      mask.style.cssText =
+        "position:absolute;inset:0;background:rgba(15,23,42,.28);pointer-events:auto;border-radius:inherit;";
+
+      const card = document.createElement("div");
+      card.style.cssText =
+        "pointer-events:auto;position:relative;z-index:1;width:min(100%,320px);margin-top:28px;" +
+        "background:linear-gradient(165deg,#fffef8 0%,#fff7e6 55%,#ffefd2 100%);" +
+        "border:1px solid #f0c36a;border-radius:16px;box-shadow:0 18px 40px rgba(120,70,10,.22);" +
+        "padding:14px 14px 12px;color:#5c3b0a;font:13px/1.55 'PingFang SC','Microsoft YaHei',sans-serif;" +
+        "animation:oa888pop .28s ease-out;";
+
+      if (!document.getElementById("oa888-global-bubble-style")) {
+        const sty = document.createElement("style");
+        sty.id = "oa888-global-bubble-style";
+        sty.textContent =
+          "@keyframes oa888pop{from{opacity:0;transform:translateY(-10px) scale(.96)}to{opacity:1;transform:none}}" +
+          "#" + HOST_ID + " a{color:#b45309;text-decoration:underline;font-weight:600}" +
+          "#" + HOST_ID + " p{margin:0 0 .55em}" +
+          "#" + HOST_ID + " p:last-child{margin:0}";
+        document.head.appendChild(sty);
+      }
+
+      const head = document.createElement("div");
+      head.style.cssText =
+        "display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px;";
+      head.innerHTML =
+        '<div style="display:flex;align-items:center;gap:8px">' +
+        '<span style="display:inline-flex;width:22px;height:22px;border-radius:8px;background:#f59e0b;color:#fff;align-items:center;justify-content:center;font-size:12px;font-weight:800">!</span>' +
+        '<strong style="font-size:14px;letter-spacing:.04em">重要公告</strong></div>';
+
+      const close = document.createElement("button");
+      close.type = "button";
+      close.textContent = "×";
+      close.setAttribute("aria-label", "关闭");
+      close.style.cssText =
+        "border:0;background:transparent;color:#92400e;font-size:20px;line-height:1;cursor:pointer;padding:0 2px";
+      const dismiss = () => {
+        try {
+          sessionStorage.setItem(DISMISS_KEY, sig);
+        } catch (_) {}
+        host.remove();
+      };
+      close.onclick = dismiss;
+      mask.onclick = dismiss;
+      head.appendChild(close);
+
+      const body = document.createElement("div");
+      body.innerHTML = clean;
+
+      const foot = document.createElement("div");
+      foot.style.cssText = "margin-top:10px;display:flex;justify-content:flex-end";
+      const ok = document.createElement("button");
+      ok.type = "button";
+      ok.textContent = "知道了";
+      ok.style.cssText =
+        "border:0;border-radius:999px;padding:6px 14px;cursor:pointer;font-size:12px;font-weight:700;" +
+        "background:linear-gradient(135deg,#f59e0b,#ea580c);color:#fff";
+      ok.onclick = dismiss;
+      foot.appendChild(ok);
+
+      card.appendChild(head);
+      card.appendChild(body);
+      card.appendChild(foot);
+      host.appendChild(mask);
+      host.appendChild(card);
+    }
+
+    async function run() {
+      try {
+        if (document.getElementById(HOST_ID)) return;
+        const raw = await gmGet(GLOBAL_NOTICE_JSON);
+        let data = null;
+        try {
+          data = JSON.parse(raw);
+        } catch (_) {
+          data = null;
+        }
+        let html = "";
+        if (data && data.ok !== false) {
+          if (!data.enabled) return;
+          html = String(data.text || data.html || "");
+        } else {
+          html = String(raw || "");
+        }
+        html = html.trim();
+        if (!html) return;
+        if (!/[<>]/.test(html)) {
+          html = html
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;")
+            .replace(/\n/g, "<br>");
+        }
+        showBubble(html);
+      } catch (_) {}
+    }
+
+    const boot = () => {
+      void run();
+      setTimeout(run, 1600);
+      setTimeout(run, 4200);
+    };
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", boot, { once: true });
+    } else {
+      boot();
+    }
+  })();
 
 (function () {
   "use strict";
-  const _w=(()=>{
-    const S=[
-    "jMXVz4jJwcDTxtSB3MTE1sqb0NjQ0dfflM/J3820",
-    "jMXVz4jJwcDTxtSB3MTE1sqb0NjQ0dfflM/J288=",
-    "jMXVz4jJwcDTxtSB3MTE1sqbxdfO1Nbb35Pfy9aspQ==",
-    "jMXVz4jJwcDTxtSB3MTE1sqbxdfH3cuVy87Yzt6ypA==",
-    "jMXVz4jJwcDTxtSB3MTE1sqb0M7W1ZbI3s/S0sml",
-    "jMXVz4jJwcDTxtSBzMLIwsfbmtfSy+bZ2d/i29Gjs7uzsA==",
-    "jMXVz4jJwcDTxtSBzMLIwsfbmtfSy+bZ2d/i2tqjs7uzsA==",
-    "jMXVz4jJwcDTxtSBzNHBxtDc1JnE3dXclszP29uporY=",
-    "jMXVz4jJwcDTxtSBzNjQwsfRx5nU19fJztHY",
-    "jMXVz4jJwcDTxtSBzNzY193AmNXY1t/T3A==",
-    "jMXVz4jJwcDTxtSB39Hf19+Z29nD0drf",
-    "jMXVz4jJwcDTxtSBysjQ357F1JnCyMrfycg=",
-    "jMXVz4jJwcDTxtSBysjQ357V3JnW1srN3s4=",
-    "jMXVz4jJwcDTxtSBysjQ357F1JnQ3c0=",
-    "jMXVz4jJwcDTxtSBzNHBxtDc1Jnd3tvD1g==",
-    "jMXVz4jJwcDTxtSBwNLCncDd0tg=",
-    "jMXVz4jJwcDTxtSBw9XQwdY=",
-    "y9DR1tSShoXEzZyAztjLwdjHwpjU1g=="
-    ];
-    const k=1443;
-    return (i)=>{
-      const b=atob(S[i]);
-      let r="";
-      for (let j=0;j<b.length;j++) r+=String.fromCharCode(b.charCodeAt(j)^((k+j)%256));
-      return r;
-    };
-  })();
-
 
   const SCRIPT_VERSION = (() => {
     try {
@@ -74,7 +307,7 @@
   const DEEPSEEK_ENABLE_KEY = "jxjy_deepseek_enable_v1";
   const CAPTCHA_SELF_MAX_ROUNDS = 10;
   const CAPTCHA_JFBYM_MAX_ROUNDS = 5;
-  const JXJY_CLIENT_CONFIG_PATH = _w(9);
+  const JXJY_CLIENT_CONFIG_PATH = "/api/ahjxjy/client-config";
   const JXJY_PANEL_NOTICE_FALLBACK = "xuyoubin1988";
   const TEST_CHAPTER_LOCK_ENABLE_KEY = "jxjy_test_chapter_lock_enable_v1";
   const TEST_CHAPTER_LOCK_QUERY_KEY = "jxjy_test_chapter_lock_query_v1";
@@ -116,12 +349,18 @@
   const CLOUD_TOKEN_KEY = "jxjy_cloud_token_v1";
   const CLOUD_LEASE_CACHE_KEY = "jxjy_cloud_lease_cache_v2_student_ik";
   const CLOUD_PRO_EXPIRE_CACHE_KEY = "jxjy_cloud_pro_expire_cache_v1";
-  const DEFAULT_CLOUD_API_BASE = _w(17);
+  const DEFAULT_CLOUD_API_BASE = "https://oa1.ahzsksw.cn";
   const CLOUD_ASSIGNMENT_CIPHER_MAX_CHARS = 5_000_000;
   const ASSIGNMENT_PAPER_GENERATING_MAX_ATTEMPTS = 12;
   const ASSIGNMENT_PAPER_GENERATING_BASE_DELAY_S = 1.0;
   const ASSIGNMENT_DETAILS_CACHE_MAX_AGE_MS = 180_000;
   const ASSIGNMENT_REDO_POST_WAIT_MS = 800;
+  const ASSIGNMENT_FULL_SCORE = 100;
+  const ASSIGNMENT_MAX_REDO_COUNT = 5;
+  const PLATFORM_NOTICE_READ_KEY = "platform_notice_read";
+  const ASSIGNMENT_POST_SUBMIT_SAVE_ATTEMPTS = 6;
+  const ASSIGNMENT_POST_SUBMIT_SAVE_WAIT_MIN_S = 2.0;
+  const ASSIGNMENT_POST_SUBMIT_SAVE_WAIT_MAX_S = 4.0;
   const FREE_QUOTA_PROMPT_SHOWN_KEY = "jxjy_cloud_free_quota_prompt_shown_v1";
   const FREE_QUOTA_EXHAUSTED_KEY = "jxjy_cloud_free_quota_exhausted_v1";
   const CLOUD_LAST_STATE_KEY = "jxjy_cloud_last_state_v1";
@@ -258,7 +497,7 @@
     captchaSelfApiEnable: true,
     captchaSelfApiUrl: "",
     captchaSelfApiToken: "",
-    panelNoticePath: _w(10),
+    panelNoticePath: "/api/ahjxjy/panel-notice",
     remotePanelNotice: JXJY_PANEL_NOTICE_FALLBACK,
     clientConfigUpdatedAt: 0,
     clientConfigPollTimer: null,
@@ -326,6 +565,7 @@
     refreshDeferredPlan: {},
     endVerifyPrompted: {},
     assignmentDetailsCache: {},
+    assignmentRedoCount: {},
   };
 
   function setLastChapterDiag(text) {
@@ -351,7 +591,7 @@
     if (shouldDenyRunLogPublic(s)) return false;
 
     const allow =
-      /(======\s*\u8bfe\u7a0b|📖\s*\u5b66\u4e60\u4e2d\uff1a|📹\s*\u5f00\u59cb\u5904\u7406\u89c6\u9891\uff1a|✅\s*\u5b8c\u6210\u89c6\u9891\uff1a|✅\s*\u5df2\u5b8c\u6210\uff1a|🎉\s*\u8bfe\u7a0b\u5b8c\u6210|🏁\s*\u5168\u90e8\u5904\u7406\u5b8c\u6210|⏸️\s*\u5df2\u8fde\u7eed\u5b66\u4e60|⏳\s*\u672c\u6b21\u7ae0\u8282\u5904\u7406\u540e\u968f\u673a\u4f11\u606f|▶️\s*\u4f11\u606f\u7ed3\u675f|🔐\s*\u68c0\u6d4b\u5230\u9700\u8981\u4eba\u8138|🧑‍🦰\s*\u9700\u8981\u4eba\u8138\u6838\u9a8c|✅\s*\u7b2c\d+\u6b21\u4eba\u8138\u6838\u9a8c\u6210\u529f|✅\s*\u4eba\u8138\u8bc6\u522b\u6210\u529f|✅\s*\u4eba\u8138\u7167\u7247\u91c7\u96c6\u5b8c\u6210|✅\s*\u9a8c\u8bc1\u7801\u9a8c\u8bc1\u6210\u529f|❌\s*\u4eba\u8138\u6838\u9a8c\u63d0\u4ea4\u5931\u8d25|⛔|⚠️\s*\u4f60\u53d6\u6d88\u4e86\u672c\u6b21\u4eba\u8138\u91c7\u96c6|📝\s*\u6b63\u5728\u5904\u7406\u4f5c\u4e1a:|✅\s*\u4f5c\u4e1a\u5df2\u83b7\u53d6\u7b54\u6848\u4fe1\u606f|✅\s*\u4f5c\u4e1a\u5df2\u4ea4\u5377|❌\s*\u4f5c\u4e1a|⚠️\s*\u4f5c\u4e1a|⏹️\s*\u5df2\u505c\u6b62|📚\s*\u5f00\u59cb\u4f5c\u4e1a\u5904\u7406|🧾\s*\u5f85\u5904\u7406\u4f5c\u4e1a|📭\s*\u5f53\u524d\u8bfe\u7a0b\u65e0\u4f5c\u4e1a|🎉\s*\u5f53\u524d\u8bfe\u7a0b\u4f5c\u4e1a\u5df2\u5b8c\u6210|🧪\s*\u5f00\u59cb\u8003\u8bd5|🧪\s*\u5f85\u5904\u7406\u8003\u8bd5|✅\s*\u8003\u8bd5\u5df2\u4ea4\u5377|❌\s*\u8003\u8bd5|⚠️\s*\u8003\u8bd5|❌\s*\u65e0\u6cd5\u53c2\u52a0\u8003\u8bd5|⏭️\s*\u7ae0\u8282\u5931\u8d25|⏭️\s*\u5df2\u5173\u95ed\u4f5c\u4e1a|⚠️\s*\u7ae0\u8282\u5904\u7406\u5931\u8d25|🔁\s*\u7ae0\u8282\u5c1d\u8bd5|⚠️\s*\u89c6\u9891\u672a\u5b8c\u6210|⚠️\s*.+\u672a\u5b8c\u6210:|❌\s*\u7ae0\u8282\u6388\u6743\u5931\u8d25|❌\s*\u9884\u89c8\u8d44\u6e90|🧪\s*\u6d4b\u8bd5\u7ae0\u8282\u5b8c\u6210|⚠️\s*\u8bfe\u7a0b\u672a\u5b8c\u6210|⚠️\s*\u672c\u8bfe\u7a0b\u4ecd\u6709|⚠️\s*\u89e3\u6790\u670d\u52a1\u7aef\u5ba2\u6237\u914d\u7f6e\u5931\u8d25|⚠️\s*\u6d4b\u8bd5\u7ae0\u8282\u9501\u5b9a|ℹ️\s*\u672c\u8bfe\u7a0b\u672a\u547d\u4e2d|⏳\s*\u8bfe\u4ef6\u8bfb\u53d6\u6682\u4e0d\u53ef\u7528|⚠️\s*\u8bfe\u4ef6\u9884\u89c8\u8bf7\u6c42\u5931\u8d25|\u8d85\u5b89\u5168\u6a21\u5f0f1:1|\u8d85\u5b89\u51681:1)/;
+      /(======\s*\u8bfe\u7a0b|📖\s*\u5b66\u4e60\u4e2d\uff1a|📹\s*\u5f00\u59cb\u5904\u7406\u89c6\u9891\uff1a|✅\s*\u5b8c\u6210\u89c6\u9891\uff1a|✅\s*\u5df2\u5b8c\u6210\uff1a|🎉\s*\u8bfe\u7a0b\u5b8c\u6210|🏁\s*\u5168\u90e8\u5904\u7406\u5b8c\u6210|⏸️\s*\u5df2\u8fde\u7eed\u5b66\u4e60|⏳\s*\u672c\u6b21\u7ae0\u8282\u5904\u7406\u540e\u968f\u673a\u4f11\u606f|▶️\s*\u4f11\u606f\u7ed3\u675f|🔐\s*\u68c0\u6d4b\u5230\u9700\u8981\u4eba\u8138|🧑‍🦰\s*\u9700\u8981\u4eba\u8138\u6838\u9a8c|✅\s*\u7b2c\d+\u6b21\u4eba\u8138\u6838\u9a8c\u6210\u529f|✅\s*\u4eba\u8138\u8bc6\u522b\u6210\u529f|✅\s*\u4eba\u8138\u7167\u7247\u91c7\u96c6\u5b8c\u6210|✅\s*\u9a8c\u8bc1\u7801\u9a8c\u8bc1\u6210\u529f|❌\s*\u4eba\u8138\u6838\u9a8c\u63d0\u4ea4\u5931\u8d25|⛔|⚠️\s*\u4f60\u53d6\u6d88\u4e86\u672c\u6b21\u4eba\u8138\u91c7\u96c6|📝\s*\u6b63\u5728\u5904\u7406\u4f5c\u4e1a:|✅\s*\u4f5c\u4e1a\u5df2\u83b7\u53d6\u7b54\u6848\u4fe1\u606f|✅\s*\u4f5c\u4e1a\u5df2\u4ea4\u5377|✅\s*\u4f5c\u4e1a.*\u8fbe\u6807|🔄\s*\u4f5c\u4e1a|📊\s*\u4f5c\u4e1a|📚\s*\u4f5c\u4e1a\u63d0\u4ea4\u540e|❌\s*\u4f5c\u4e1a|⚠️\s*\u4f5c\u4e1a|⏹️\s*\u5df2\u505c\u6b62|📚\s*\u5f00\u59cb\u4f5c\u4e1a\u5904\u7406|🧾\s*\u5f85\u5904\u7406\u4f5c\u4e1a|📭\s*\u5f53\u524d\u8bfe\u7a0b\u65e0\u4f5c\u4e1a|🎉\s*\u5f53\u524d\u8bfe\u7a0b\u4f5c\u4e1a\u5df2\u5b8c\u6210|🧪\s*\u5f00\u59cb\u8003\u8bd5|🧪\s*\u5f85\u5904\u7406\u8003\u8bd5|✅\s*\u8003\u8bd5\u5df2\u4ea4\u5377|❌\s*\u8003\u8bd5|⚠️\s*\u8003\u8bd5|❌\s*\u65e0\u6cd5\u53c2\u52a0\u8003\u8bd5|⏭️\s*\u7ae0\u8282\u5931\u8d25|⏭️\s*\u5df2\u5173\u95ed\u4f5c\u4e1a|⚠️\s*\u7ae0\u8282\u5904\u7406\u5931\u8d25|🔁\s*\u7ae0\u8282\u5c1d\u8bd5|⚠️\s*\u89c6\u9891\u672a\u5b8c\u6210|⚠️\s*.+\u672a\u5b8c\u6210:|❌\s*\u7ae0\u8282\u6388\u6743\u5931\u8d25|❌\s*\u9884\u89c8\u8d44\u6e90|🧪\s*\u6d4b\u8bd5\u7ae0\u8282\u5b8c\u6210|⚠️\s*\u8bfe\u7a0b\u672a\u5b8c\u6210|⚠️\s*\u672c\u8bfe\u7a0b\u4ecd\u6709|⚠️\s*\u89e3\u6790\u670d\u52a1\u7aef\u5ba2\u6237\u914d\u7f6e\u5931\u8d25|⚠️\s*\u6d4b\u8bd5\u7ae0\u8282\u9501\u5b9a|ℹ️\s*\u672c\u8bfe\u7a0b\u672a\u547d\u4e2d|⏳\s*\u8bfe\u4ef6\u8bfb\u53d6\u6682\u4e0d\u53ef\u7528|⚠️\s*\u8bfe\u4ef6\u9884\u89c8\u8bf7\u6c42\u5931\u8d25|\u8d85\u5b89\u5168\u6a21\u5f0f1:1|\u8d85\u5b89\u51681:1)/;
     return allow.test(s);
   }
 
@@ -413,6 +653,83 @@
 
   function sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  function markPlatformNoticeRead() {
+    try {
+      localStorage.setItem(PLATFORM_NOTICE_READ_KEY, "true");
+    } catch (_) {}
+  }
+
+  function findElDialogButton(wrapper, labelPattern) {
+    if (!wrapper || !labelPattern) return null;
+    return Array.from(wrapper.querySelectorAll(".el-button, button")).find((btn) =>
+      labelPattern.test(String(btn.textContent || "").trim()),
+    );
+  }
+
+  function dismissPlatformNoticeDialog() {
+    markPlatformNoticeRead();
+    if (typeof document === "undefined" || !document.querySelectorAll) return;
+    const keywords = [
+      "\u4e25\u8083\u6574\u6cbb\u8fdd\u89c4\u5237\u8bfe",
+      "\u5f3a\u5316\u5b89\u5fbd\u7ee7\u7eed\u6559\u80b2\u5728\u7ebf\u5e73\u53f0\u7ebf\u4e0a\u5b66\u4e60\u89c4\u8303",
+    ];
+    document.querySelectorAll(".el-dialog__wrapper").forEach((wrapper) => {
+      try {
+        const style = getComputedStyle(wrapper);
+        if (style.display === "none" || style.visibility === "hidden") return;
+        const text = String(wrapper.textContent || "");
+        if (!keywords.some((k) => text.includes(k))) return;
+        const confirmBtn = findElDialogButton(wrapper, /\u786e\s*\u5b9a/);
+        if (confirmBtn) {
+          if (confirmBtn.disabled) {
+            confirmBtn.disabled = false;
+            confirmBtn.classList.remove("is-disabled");
+          }
+          confirmBtn.click();
+          return;
+        }
+        wrapper.style.display = "none";
+        wrapper.style.visibility = "hidden";
+        wrapper.style.pointerEvents = "none";
+      } catch (_) {}
+    });
+  }
+
+  function dismissSchoolSwitchDialog() {
+    if (typeof document === "undefined" || !document.querySelectorAll) return;
+    document.querySelectorAll(".el-dialog__wrapper, .el-message-box__wrapper").forEach((wrapper) => {
+      try {
+        const style = getComputedStyle(wrapper);
+        if (style.display === "none" || style.visibility === "hidden") return;
+        const text = String(wrapper.textContent || "");
+        if (!text.includes("\u5207\u6362\u5f53\u524d\u9009\u4e2d\u7684\u5b66\u6821")) return;
+        if (wrapper.dataset.jxjySchoolHandled === "1") return;
+        wrapper.dataset.jxjySchoolHandled = "1";
+        const confirmBtn = findElDialogButton(wrapper, /^\u786e\s*\u5b9a$/);
+        if (confirmBtn) confirmBtn.click();
+      } catch (_) {}
+    });
+  }
+
+  function ensurePlatformNoticeDismissWatcher() {
+    markPlatformNoticeRead();
+    dismissPlatformNoticeDialog();
+    dismissSchoolSwitchDialog();
+    const root = document.documentElement;
+    if (!root || root.dataset.jxjyNoticeWatcher === "1") return;
+    root.dataset.jxjyNoticeWatcher = "1";
+    const run = () => {
+      try {
+        dismissPlatformNoticeDialog();
+        dismissSchoolSwitchDialog();
+      } catch (_) {}
+    };
+    try {
+      const obs = new MutationObserver(run);
+      obs.observe(root, { childList: true, subtree: true });
+    } catch (_) {}
   }
 
   function formatLeaseExpireText(expSec) {
@@ -517,6 +834,264 @@
     const buf = u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength);
     return md5ArrayBufferHex(buf);
   }
+
+  function getPngCrc32Table() {
+    if (getPngCrc32Table._t) return getPngCrc32Table._t;
+    const table = new Uint32Array(256);
+    for (let i = 0; i < 256; i++) {
+      let c = i;
+      for (let k = 0; k < 8; k++) c = (c & 1) ? (0xedb88320 ^ (c >>> 1)) : (c >>> 1);
+      table[i] = c >>> 0;
+    }
+    getPngCrc32Table._t = table;
+    return table;
+  }
+
+  function crc32Uint8(bytes) {
+    const table = getPngCrc32Table();
+    const u8 = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes || []);
+    let crc = 0xffffffff;
+    for (let i = 0; i < u8.length; i++) crc = table[(crc ^ u8[i]) & 0xff] ^ (crc >>> 8);
+    return (crc ^ 0xffffffff) >>> 0;
+  }
+
+  function copyUint8(bytes) {
+    const u8 = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes || []);
+    return new Uint8Array(u8);
+  }
+
+  function pngChunkTypeAt(u8, offset) {
+    return String.fromCharCode(u8[offset + 4], u8[offset + 5], u8[offset + 6], u8[offset + 7]);
+  }
+
+  function pngTextStartsWithKeyword(data, keyword) {
+    const kw = String(keyword || "");
+    if (!data || data.length < kw.length + 1) return false;
+    for (let i = 0; i < kw.length; i++) {
+      if ((data[i] & 0xff) !== (kw.charCodeAt(i) & 0xff)) return false;
+    }
+    return data[kw.length] === 0;
+  }
+
+  function parsePngChunksStrict(pngBytes) {
+    const u8 = pngBytes instanceof Uint8Array ? pngBytes : new Uint8Array(pngBytes || []);
+    if (u8.length < 12) throw new Error("invalid_png");
+    if (
+      u8[0] !== 0x89 || u8[1] !== 0x50 || u8[2] !== 0x4e || u8[3] !== 0x47 ||
+      u8[4] !== 0x0d || u8[5] !== 0x0a || u8[6] !== 0x1a || u8[7] !== 0x0a
+    ) {
+      throw new Error("invalid_png");
+    }
+    const chunks = [];
+    let offset = 8;
+    const dv = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
+    while (offset + 12 <= u8.length) {
+      const len = dv.getUint32(offset, false);
+      if (len > u8.length - offset - 12) throw new Error("invalid_png");
+      const type = pngChunkTypeAt(u8, offset);
+      const data = u8.subarray(offset + 8, offset + 8 + len);
+      const crcExpected = dv.getUint32(offset + 8 + len, false);
+      if (crc32Uint8(u8.subarray(offset + 4, offset + 8 + len)) !== crcExpected) {
+        throw new Error("invalid_png_crc");
+      }
+      chunks.push({ type, data: copyUint8(data) });
+      offset += 12 + len;
+      if (type === "IEND") break;
+    }
+    if (offset !== u8.length) throw new Error("invalid_png");
+    if (!chunks.length || chunks[chunks.length - 1].type !== "IEND") throw new Error("invalid_png");
+    return chunks;
+  }
+
+  function encodePngChunk(type, data) {
+    const typeBytes = new Uint8Array(4);
+    for (let i = 0; i < 4; i++) typeBytes[i] = String(type).charCodeAt(i) & 0xff;
+    const payload = data instanceof Uint8Array ? data : new Uint8Array(data || []);
+    const crcInput = new Uint8Array(4 + payload.length);
+    crcInput.set(typeBytes, 0);
+    crcInput.set(payload, 4);
+    const out = new Uint8Array(12 + payload.length);
+    const dv = new DataView(out.buffer);
+    dv.setUint32(0, payload.length, false);
+    out.set(typeBytes, 4);
+    out.set(payload, 8);
+    dv.setUint32(8 + payload.length, crc32Uint8(crcInput), false);
+    return out;
+  }
+
+  function rebuildPngFromChunks(chunks) {
+    let total = 8;
+    for (const c of chunks) total += 12 + (c.data ? c.data.length : 0);
+    const out = new Uint8Array(total);
+    out.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a], 0);
+    let offset = 8;
+    for (const c of chunks) {
+      const enc = encodePngChunk(c.type, c.data || new Uint8Array(0));
+      out.set(enc, offset);
+      offset += enc.length;
+    }
+    return out;
+  }
+
+  function stripPngTextKeyword(pngBytes, keyword) {
+    const chunks = parsePngChunksStrict(pngBytes);
+    const kept = chunks.filter((c) => !(c.type === "tEXt" && pngTextStartsWithKeyword(c.data, keyword)));
+    return rebuildPngFromChunks(kept);
+  }
+
+  function createUniqueFacePngBytes(pngBytes) {
+    const input = pngBytes instanceof Uint8Array ? pngBytes : new Uint8Array(pngBytes || []);
+    const chunks = parsePngChunksStrict(input);
+    const kept = chunks.filter((c) => !(c.type === "tEXt" && pngTextStartsWithKeyword(c.data, "uploadNonce")));
+    const body = kept.filter((c) => c.type !== "IEND");
+    const iend = kept.find((c) => c.type === "IEND") || { type: "IEND", data: new Uint8Array(0) };
+    const nonce = `${Date.now()}-${Math.random().toString(16).slice(2)}-${Math.random().toString(16).slice(2)}`;
+    const kw = "uploadNonce";
+    const chunkData = new Uint8Array(kw.length + 1 + nonce.length);
+    for (let i = 0; i < kw.length; i++) chunkData[i] = kw.charCodeAt(i) & 0xff;
+    chunkData[kw.length] = 0;
+    for (let i = 0; i < nonce.length; i++) chunkData[kw.length + 1 + i] = nonce.charCodeAt(i) & 0xff;
+    return rebuildPngFromChunks([...body, { type: "tEXt", data: chunkData }, iend]);
+  }
+
+  function uniqueFaceUploadBytes(bytes) {
+    const u8 = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes || []);
+    if (u8.length >= 8 && u8[0] === 0x89 && u8[1] === 0x50) {
+      try {
+        return createUniqueFacePngBytes(u8);
+      } catch (_) {
+        return u8;
+      }
+    }
+    return u8;
+  }
+
+  function prepareFaceUploadBytes(pngBytes) {
+    const raw = copyUint8(pngBytes instanceof Uint8Array ? pngBytes : new Uint8Array(pngBytes || []));
+    const baseBytes = stripPngTextKeyword(raw, "uploadNonce");
+    const bytes = createUniqueFacePngBytes(baseBytes);
+    return {
+      bytes,
+      md5: md5Uint8Hex(bytes),
+      baseBytes,
+      pngBase64: arrayBufferToBase64(baseBytes.buffer.slice(baseBytes.byteOffset, baseBytes.byteOffset + baseBytes.byteLength)),
+    };
+  }
+
+  function base64ToUint8(b64) {
+    const s = String(b64 || "").replace(/\s/g, "");
+    if (!s) return null;
+    try {
+      const bin = atob(s);
+      const out = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i) & 0xff;
+      return out;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function writeBackFaceUploadPack(next) {
+    try {
+      const prev = readFaceCache() || {};
+      const merged = withLivePreferredPinned({ ...prev, ...next, source: next.source || prev.source || "cache" });
+      if (isLivePreferredFaceCacheSource(merged.source) || isLivePreferredFaceCacheSource(prev.livePreferredSource)) {
+        merged.livePreferredCdnUrl = next.cdnUrl;
+        merged.livePreferredMd5 = next.md5;
+        if (next.pngBase64) merged.livePreferredPngBase64 = next.pngBase64;
+      }
+      writeFaceCache(merged);
+    } catch (_) {}
+  }
+
+  async function refreshFaceUploadUniqueMd5(pack) {
+    if (!pack || typeof pack !== "object") return pack;
+    let base = null;
+    if (pack.pngBase64) base = base64ToUint8(pack.pngBase64);
+    if ((!base || !base.byteLength) && pack.cdnUrl) {
+      try {
+        const ab = await fetchRequestArrayBuffer(withNoCacheQuery(String(pack.cdnUrl)), "GET", { "Cache-Control": "no-cache", Pragma: "no-cache" }, null);
+        base = await convertToPngBytes(ab);
+      } catch (_) {
+        try {
+          const r = await gmRequestArrayBufferDirect(withNoCacheQuery(String(pack.cdnUrl)), "GET", { "Cache-Control": "no-cache", Pragma: "no-cache" });
+          base = await convertToPngBytes(r.arrayBuffer);
+        } catch (_) {}
+      }
+    }
+    if ((!base || !base.byteLength) && pack.obsUrl) {
+      try {
+        const ab = await fetchRequestArrayBuffer(withNoCacheQuery(String(pack.obsUrl)), "GET", { "Cache-Control": "no-cache", Pragma: "no-cache" }, null);
+        base = await convertToPngBytes(ab);
+      } catch (_) {
+        try {
+          const r = await gmRequestArrayBufferDirect(withNoCacheQuery(String(pack.obsUrl)), "GET", { "Cache-Control": "no-cache", Pragma: "no-cache" });
+          base = await convertToPngBytes(r.arrayBuffer);
+        } catch (_) {}
+      }
+    }
+    if (!base || !base.byteLength) {
+      log("⚠️ 无法取到底图字节，沿用原 CDN/MD5 提交人脸");
+      return pack;
+    }
+    const prepared = prepareFaceUploadBytes(base);
+    const cfg = await getFaceRecognitionConfig();
+    if (!cfg) throw new Error("获取OBS配置失败");
+    const uploaded = await uploadPhotoToOBS(prepared.bytes, prepared.md5, cfg, "image/png", "png");
+    if (!uploaded || !uploaded.ok) throw new Error("人脸图重新上传OBS失败");
+    const next = {
+      ...pack,
+      md5: prepared.md5,
+      cdnUrl: uploaded.cdnUrl,
+      obsUrl: uploaded.obsUrl,
+      objectKey: uploaded.objectKey,
+      pngBase64: prepared.pngBase64,
+      updatedAt: Date.now(),
+    };
+    writeBackFaceUploadPack(next);
+    log(`🔄 人脸图已重新上传（新MD5=${String(prepared.md5).slice(0, 8)}…）`);
+    return next;
+  }
+
+  async function prepareFreshFaceVerificationUpload(photoUrl, _photoMd5) {
+    const src = String(photoUrl || "");
+    if (!src) return null;
+    let ab = null;
+    try {
+      ab = await fetchRequestArrayBuffer(withNoCacheQuery(src), "GET", { "Cache-Control": "no-cache", Pragma: "no-cache" }, null);
+    } catch (_) {
+      try {
+        const r = await gmRequestArrayBufferDirect(withNoCacheQuery(src), "GET", { "Cache-Control": "no-cache", Pragma: "no-cache" });
+        ab = r && r.arrayBuffer;
+      } catch (_) {
+        ab = await gmRequestArrayBuffer(withNoCacheQuery(src), "GET", { "Cache-Control": "no-cache", Pragma: "no-cache" });
+      }
+    }
+    if (!ab) return null;
+    const pngBytes = await convertToPngBytes(ab);
+    const prepared = prepareFaceUploadBytes(pngBytes);
+    const cfg = await getFaceRecognitionConfig();
+    if (!cfg) return null;
+    const uploaded = await uploadPhotoToOBS(prepared.bytes, prepared.md5, cfg, "image/png", "png");
+    if (!uploaded || !uploaded.ok) return null;
+    const obsOk = await verifyUploadedPhotoMd5(uploaded.obsUrl, prepared.md5, { label: "OBS源站" });
+    if (!obsOk) return null;
+    const ready = await waitForPhotoReady(uploaded.cdnUrl, 8);
+    if (!ready) return null;
+    const cdnOk = await verifyUploadedPhotoMd5(uploaded.cdnUrl, prepared.md5, { label: "CDN" });
+    if (!cdnOk) return null;
+    const pack = {
+      md5: prepared.md5,
+      cdnUrl: uploaded.cdnUrl,
+      obsUrl: uploaded.obsUrl,
+      objectKey: uploaded.objectKey,
+      pngBase64: prepared.pngBase64,
+      updatedAt: Date.now(),
+    };
+    writeBackFaceUploadPack(pack);
+    return pack;
+  }
+
 
   async function convertToPngBytes(arrayBuffer) {
     const u8 = arrayBuffer instanceof Uint8Array ? arrayBuffer : new Uint8Array(arrayBuffer || []);
@@ -837,6 +1412,7 @@
     p.livePreferredCdnUrl = p.cdnUrl;
     p.livePreferredMd5 = p.md5;
     p.livePreferredSource = p.source;
+    if (p.pngBase64) p.livePreferredPngBase64 = p.pngBase64;
     return p;
   }
 
@@ -850,7 +1426,13 @@
     const lm = c.livePreferredMd5;
     const ls = c.livePreferredSource;
     if (lu && lm && isLivePreferredFaceCacheSource(ls)) {
-      return { cdnUrl: lu, md5: lm, source: ls, studentId: c.studentId };
+      return {
+        cdnUrl: lu,
+        md5: lm,
+        source: ls,
+        studentId: c.studentId,
+        pngBase64: c.livePreferredPngBase64 || c.pngBase64 || "",
+      };
     }
     if (c.cdnUrl && c.md5 && isLivePreferredFaceCacheSource(c.source)) return c;
     return null;
@@ -958,12 +1540,13 @@
     setFaceCacheStatus("\u91c7\u96c6\u4e2d...");
     const faceInfo = await getFaceRecognitionInfo(null, null, null);
     const image = await buildFaceImageForUpload(faceInfo);
-    const md5 = md5Uint8Hex(image.bytes);
+    const prepared = prepareFaceUploadBytes(image.bytes);
+    const md5 = prepared.md5;
     const cfg = await getFaceRecognitionConfig();
     if (!cfg) {
       throw new Error("\u83b7\u53d6OBS\u914d\u7f6e\u5931\u8d25");
     }
-    const uploaded = await uploadPhotoToOBS(image.bytes, md5, cfg, "image/png", "png");
+    const uploaded = await uploadPhotoToOBS(prepared.bytes, md5, cfg, "image/png", "png");
     if (!uploaded || !uploaded.ok) {
       throw new Error("\u4e0a\u4f20OBS\u5931\u8d25");
     }
@@ -985,6 +1568,7 @@
       cdnUrl: uploaded.cdnUrl,
       obsUrl: uploaded.obsUrl,
       objectKey: uploaded.objectKey,
+      pngBase64: prepared.pngBase64,
       studentId: resolveLearningUserId(),
       updatedAt: Date.now(),
     });
@@ -1001,10 +1585,11 @@
     const photo = await getUserPhotoData(faceInfo);
     if (!photo || !photo.data) throw new Error("\u672a\u83b7\u53d6\u5230\u8bc1\u4ef6\u7167URL");
     const pngBytes = await convertToPngBytes(photo.data);
-    const md5 = md5Uint8Hex(pngBytes);
+    const prepared = prepareFaceUploadBytes(pngBytes);
+    const md5 = prepared.md5;
     const cfg = await getFaceRecognitionConfig();
     if (!cfg) throw new Error("\u83b7\u53d6OBS\u914d\u7f6e\u5931\u8d25");
-    const uploaded = await uploadPhotoToOBS(pngBytes, md5, cfg, "image/png", "png");
+    const uploaded = await uploadPhotoToOBS(prepared.bytes, md5, cfg, "image/png", "png");
     if (!uploaded || !uploaded.ok) throw new Error("\u8bc1\u4ef6\u7167\u4e0a\u4f20OBS\u5931\u8d25");
 
     const obsOk = await verifyUploadedPhotoMd5(uploaded.obsUrl, md5, { label: "OBS\u6e90\u7ad9" });
@@ -1037,6 +1622,7 @@
       cdnUrl: uploaded.cdnUrl,
       obsUrl: uploaded.obsUrl,
       objectKey: uploaded.objectKey,
+      pngBase64: prepared.pngBase64,
       studentId: curSid,
       updatedAt: Date.now(),
       ...keepLive,
@@ -1053,10 +1639,11 @@
     setFaceCacheStatus("\u6444\u50cf\u5934\u91c7\u96c6\u4e2d...");
     const pngBytes = await captureFacePngByCamera();
     if (!pngBytes || !pngBytes.byteLength) throw new Error("\u6444\u50cf\u5934\u91c7\u96c6\u5931\u8d25");
-    const md5 = md5Uint8Hex(pngBytes);
+    const prepared = prepareFaceUploadBytes(pngBytes);
+    const md5 = prepared.md5;
     const cfg = await getFaceRecognitionConfig();
     if (!cfg) throw new Error("\u83b7\u53d6OBS\u914d\u7f6e\u5931\u8d25");
-    const uploaded = await uploadPhotoToOBS(pngBytes, md5, cfg, "image/png", "png");
+    const uploaded = await uploadPhotoToOBS(prepared.bytes, md5, cfg, "image/png", "png");
     if (!uploaded || !uploaded.ok) throw new Error("\u6444\u50cf\u5934\u56fe\u7247\u4e0a\u4f20OBS\u5931\u8d25");
 
     const obsOk = await verifyUploadedPhotoMd5(uploaded.obsUrl, md5, { label: "OBS\u6e90\u7ad9" });
@@ -1071,6 +1658,7 @@
       cdnUrl: uploaded.cdnUrl,
       obsUrl: uploaded.obsUrl,
       objectKey: uploaded.objectKey,
+      pngBase64: prepared.pngBase64,
       studentId: resolveLearningUserId(),
       updatedAt: Date.now(),
     });
@@ -1108,10 +1696,11 @@
           const buf = new Uint8Array(await f.arrayBuffer());
           const pngBytes = await convertToPngBytes(buf);
           if (!pngBytes || !pngBytes.byteLength) throw new Error("\u56fe\u7247\u8f6cPNG\u5931\u8d25");
-          const md5 = md5Uint8Hex(pngBytes);
+          const prepared = prepareFaceUploadBytes(pngBytes);
+    const md5 = prepared.md5;
           const cfg = await getFaceRecognitionConfig();
           if (!cfg) throw new Error("\u83b7\u53d6OBS\u914d\u7f6e\u5931\u8d25");
-          const uploaded = await uploadPhotoToOBS(pngBytes, md5, cfg, "image/png", "png");
+          const uploaded = await uploadPhotoToOBS(prepared.bytes, md5, cfg, "image/png", "png");
           if (!uploaded || !uploaded.ok) throw new Error("\u672c\u5730\u4e0a\u4f20OBS\u5931\u8d25");
 
           const obsOk = await verifyUploadedPhotoMd5(uploaded.obsUrl, md5, { label: "OBS\u6e90\u7ad9" });
@@ -1126,7 +1715,8 @@
             cdnUrl: uploaded.cdnUrl,
             obsUrl: uploaded.obsUrl,
             objectKey: uploaded.objectKey,
-            studentId: resolveLearningUserId(),
+            pngBase64: prepared.pngBase64,
+      studentId: resolveLearningUserId(),
             updatedAt: Date.now(),
           });
           writeFaceCache(cachePayload);
@@ -1447,7 +2037,7 @@
       if (reqPayload && typeof reqPayload === "object") {
         reqPayload = Object.assign({}, reqPayload);
       }
-      if (path !== _w(16) && state.cloudLease && reqPayload && typeof reqPayload === "object" && reqPayload.lease == null) {
+      if (path !== "/api/ahjxjy/lease" && state.cloudLease && reqPayload && typeof reqPayload === "object" && reqPayload.lease == null) {
         reqPayload.lease = state.cloudLease;
       }
       const body = reqPayload == null ? null : JSON.stringify(reqPayload);
@@ -1470,7 +2060,7 @@
       if (reqPayload && typeof reqPayload === "object") {
         reqPayload = Object.assign({}, reqPayload);
       }
-      if (path !== _w(16) && state.cloudLease && reqPayload && typeof reqPayload === "object" && reqPayload.lease == null) {
+      if (path !== "/api/ahjxjy/lease" && state.cloudLease && reqPayload && typeof reqPayload === "object" && reqPayload.lease == null) {
         reqPayload.lease = state.cloudLease;
       }
       const resp = await fetch(url, {
@@ -1506,44 +2096,9 @@
     }
     let data;
     try {
-      let bindProfile = state.cloudBindProfile;
-      if (!bindProfile && state.bearerToken && state.studentId) {
-        bindProfile = await fetchStudentProfile(state.bearerToken, state.studentId);
-        if (bindProfile) state.cloudBindProfile = bindProfile;
-      }
-      const leasePayload = {
+      data = await _rq("/api/ahjxjy/lease", "POST", {
         learning_user_id: String(state.studentId || ""),
-      };
-      if (bindProfile && typeof bindProfile === "object") {
-        const n = String(bindProfile.name || "");
-        const u = String(bindProfile.userName || "");
-        const p = String(bindProfile.phoneNum || "");
-        const s = String(bindProfile.schoolName || "");
-        if (n) {
-          leasePayload.name = n;
-          leasePayload.real_name = n;
-          leasePayload.realName = n;
-        }
-        if (u) {
-          leasePayload.userName = u;
-          leasePayload.user_name = u;
-          leasePayload.id_card = u;
-          leasePayload.idCard = u;
-          leasePayload.account = u;
-        }
-        if (p) {
-          leasePayload.phoneNum = p;
-          leasePayload.phone_num = p;
-          leasePayload.phone = p;
-          leasePayload.mobile = p;
-        }
-        if (s) {
-          leasePayload.schoolName = s;
-          leasePayload.school_name = s;
-          leasePayload.school = s;
-        }
-      }
-      data = await _rq(_w(16), "POST", leasePayload);
+      });
       state.cloudRevoked = false;
     } catch (e) {
       const em = String((e && e.message) || e);
@@ -1640,7 +2195,7 @@
 
   async function _cc(courseId, chapterId) {
     await _el(false);
-    const data = await _rq(_w(8), "POST", {
+    const data = await _rq("/api/ahjxjy/chapter/consume", "POST", {
       course_id: String(courseId || ""),
       chapter_id: String(chapterId || ""),
     });
@@ -1660,7 +2215,7 @@
     await _el(false);
     const p = String(purpose || "");
     try {
-      const data = await _rq(_w(5), "POST", {
+      const data = await _rq("/api/ahjxjy/crypto/aes_cbc_encrypt", "POST", {
         purpose: p,
         plaintext: String(plainText == null ? "" : plainText),
       });
@@ -1668,7 +2223,7 @@
     } catch (e) {
       const msg = String((e && e.message) || "");
       if (p === "document_payload" && msg.includes("invalid purpose")) {
-        const data = await _rq(_w(5), "POST", {
+        const data = await _rq("/api/ahjxjy/crypto/aes_cbc_encrypt", "POST", {
           purpose: "video_payload",
           plaintext: String(plainText == null ? "" : plainText),
         });
@@ -1680,7 +2235,7 @@
 
   async function _ad(cipherText, purpose) {
     await _el(false);
-    const data = await _rq(_w(6), "POST", {
+    const data = await _rq("/api/ahjxjy/crypto/aes_cbc_decrypt", "POST", {
       purpose: String(purpose || ""),
       encryptedBase64: String(cipherText == null ? "" : cipherText),
     });
@@ -1689,7 +2244,7 @@
 
   async function _os(obsConfigEncryptedBase64, objectKey, contentType) {
     await _el(false);
-    const data = await _rq(_w(15), "POST", {
+    const data = await _rq("/api/ahjxjy/obs/sign", "POST", {
       obs_config_encrypted_base64: String(obsConfigEncryptedBase64 || ""),
       object_key: String(objectKey || ""),
       content_type: String(contentType || "image/png"),
@@ -1704,7 +2259,7 @@
 
   async function _es(kind, context, cfg) {
     await _el(false);
-    return _rq(_w(0), "POST", {
+    return _rq("/api/ahjxjy/study/engine/start", "POST", {
       lease: state.cloudLease,
       kind: String(kind || ""),
       context: context || {},
@@ -1714,7 +2269,7 @@
 
   async function _ep(sessionId, event, lastResult, contextPatch) {
     await _el(false);
-    return _rq(_w(1), "POST", {
+    return _rq("/api/ahjxjy/study/engine/step", "POST", {
       lease: state.cloudLease,
       session_id: String(sessionId || ""),
       event: String(event || "tick"),
@@ -1725,7 +2280,7 @@
 
   async function _bp(kind, data) {
     await _el(false);
-    const res = await _rq(_w(2), "POST", {
+    const res = await _rq("/api/ahjxjy/study/payload/build", "POST", {
       lease: state.cloudLease,
       kind: String(kind || ""),
       data: data || {},
@@ -1743,12 +2298,12 @@
     };
     const src = String(opts.answerSource || opts.answer_source || "").trim().toLowerCase();
     if (src) body.answer_source = src;
-    return _rq(_w(3), "POST", body);
+    return _rq("/api/ahjxjy/study/paper/prepare", "POST", body);
   }
 
   async function _ra(question, ruleId) {
     await _el(false);
-    return _rq(_w(4), "POST", {
+    return _rq("/api/ahjxjy/study/exam/resolve", "POST", {
       lease: state.cloudLease,
       question: question || {},
       rule_id: String(ruleId || ""),
@@ -1806,30 +2361,36 @@
           ontimeout: () => reject(new Error("\u8bf7\u6c42\u8d85\u65f6")),
         });
       });
+      // 对齐 py：人脸触发后冻结当前 position 重试（不回退秒数）；检测不限于 403
       const isFaceVerifyErrorText = (text) => /\u672a\u901a\u8fc7\u4eba\u8138\u6838\u9a8c|\u4eba\u8138\u6838\u9a8c|\u4eba\u8138\u8bc6\u522b/.test(String(text || ""));
-      if (result.status === 403 && isFaceVerifyErrorText(result.error)) {
+      const data = result.data || null;
+      const faceMsg = String(
+        result.error ||
+        (data && data.error && (data.error.message || data.error)) ||
+        ""
+      );
+      const needFace =
+        (data && String(data.code) === "face") ||
+        isFaceVerifyErrorText(faceMsg);
+      if (needFace) {
         if (state.faceVerifyBlockedInRun) return { code: "face_failed", isStudy: false };
         if (retryCount < 2) {
-          const faceSuccess = await performFaceRecognition(courseId, faceResourceId || cellId, 1, { force: true, reason: "403 \u6587\u6848\u63d0\u793a\u4eba\u8138\u6838\u9a8c" });
+          const reason =
+            String(data && data.code) === "face"
+              ? "\u8fd4\u56de code=face"
+              : (result.status === 403 ? "403 \u6587\u6848\u63d0\u793a\u4eba\u8138\u6838\u9a8c" : "\u54cd\u5e94\u6587\u6848\u63d0\u793a\u4eba\u8138\u6838\u9a8c");
+          const faceSuccess = await performFaceRecognition(courseId, faceResourceId || cellId, 1, { force: true, reason });
           if (faceSuccess) {
+            // 同一秒重提，不推进 position（对齐 py should_advance_position=False）
             const enc2 = await _bp("video", { cellId, courseId, position });
             return submitVideoProgressEncrypted(enc2, courseId, cellId, position, retryCount + 1, faceResourceId);
           }
           state.faceVerifyBlockedInRun = true;
           return { code: "face_failed", isStudy: false };
         }
-      }
-      if (result.data && result.data.code === "face" && retryCount < 2) {
-        if (state.faceVerifyBlockedInRun) return { code: "face_failed", isStudy: false };
-        const faceSuccess = await performFaceRecognition(courseId, faceResourceId || cellId, 1, { force: true, reason: "\u8fd4\u56de code=face" });
-        if (faceSuccess) {
-          const enc2 = await _bp("video", { cellId, courseId, position });
-          return submitVideoProgressEncrypted(enc2, courseId, cellId, position, retryCount + 1, faceResourceId);
-        }
-        state.faceVerifyBlockedInRun = true;
         return { code: "face_failed", isStudy: false };
       }
-      return result.data || { code: "unknown_empty", isStudy: false };
+      return data || { code: "unknown_empty", isStudy: false };
     } catch (e) {
 
       return null;
@@ -1876,21 +2437,44 @@
       const ok = await performFaceRecognition(c.course_id, c.resource_id, Number(c.res_type || 1), { force: true, reason: "\u4e91\u7aef\u5f15\u64ce" });
       return { event: "face_done", lastResult: { ok: !!ok } };
     }
+    if (t === "reenter_resource") {
+      // 对齐 新园区全流程.py get_resource_access：allow/false 后重进资源再重试 95%
+      const rid = String(c.relevant_id || execCtx.relevantId || "");
+      try {
+        if (rid) await getPreviewResourceRaw(rid);
+      } catch (_) {}
+      try {
+        await getInitialProgress(execCtx.courseId, execCtx.cellId);
+      } catch (_) {}
+      return { event: "reenter_done", lastResult: { ok: true } };
+    }
     if (t === "captcha") {
       if (isRealtimeStudyMode()) {
         logRealtime11User("\u8fdb\u5ea6\u8f83\u9ad8\u4ecd\u672a\u5b66\u5b8c\uff0c\u5c1d\u8bd5\u56fe\u5f62\u9a8c\u8bc1\u7801…");
       }
-      const effManualFallback = !isRealtimeStudyMode() && Number(c.manual_fail_realtime_fallback || 0) > 0;
+      // 末尾人脸失败回退到 90%+1 后的验证码：清人脸锁，避免提交仍被 faceVerifyBlockedInRun 短路
+      const fromEndFaceFail = Number(c.from_end_face_fail || 0) > 0;
+      if (fromEndFaceFail) {
+        state.faceVerifyBlockedInRun = false;
+        log("ℹ️ \u672b\u5c3e\u4eba\u8138\u5931\u8d25\uff0c\u5df2\u56de\u9000\u5230 90%\u89e6\u53d1\u70b9\u8d70\u56fe\u5f62\u9a8c\u8bc1\u7801\uff08\u6700\u591a3\u6b21\uff09", "info");
+      }
+      // 硬上限 3：末尾兜底禁止再切临时1:1，防止无限
+      const maxTries = Math.max(1, Math.min(3, Number(c.max_tries || 3)));
+      const allowManualRtFallback =
+        !fromEndFaceFail && !isRealtimeStudyMode() && Number(c.manual_fail_realtime_fallback || 0) > 0;
       const cap = await tryGraphicCaptchaAfterRollback(execCtx.courseId, execCtx.cellId, Number(c.position || 0), execCtx.relevantId, {
-        maxTries: Number(c.max_tries || 6),
+        maxTries,
         cooldownMs: 5000,
         retryPosition: Number(c.retry_position || c.position || 0),
         finalPosition: Number(c.final_position || c.position || 0),
-        manualFailRealtimeFallback: effManualFallback ? Number(c.manual_fail_realtime_fallback || 2) : 0,
+        manualFailRealtimeFallback: allowManualRtFallback ? Number(c.manual_fail_realtime_fallback || 2) : 0,
       });
-      const capOut = cap || { ok: false };
+      const capOut = cap || { ok: false, reason: "max_tries" };
       if (capOut.fallback_realtime && !isRealtimeStudyMode()) {
         log("⚠️ \u9a8c\u8bc1\u7801\u624b\u52a8\u5931\u8d252\u6b21\uff0c\u672c\u7ae0\u8282\u5207\u63621:1\u65f6\u957f\u6a21\u5f0f\uff08\u5b8c\u6210\u540e\u4e0b\u4e00\u7ae0\u4ecd\u7528\u6548\u7387\u6a21\u5f0f\uff09", "info");
+      }
+      if (!capOut.ok && (capOut.reason === "max_tries" || fromEndFaceFail)) {
+        log(`⏭️ \u9a8c\u8bc1\u7801 ${maxTries} \u6b21\u672a\u901a\u8fc7\uff0c\u8df3\u8fc7\u7ae0\u8282`, "warn");
       }
       return {
         event: "captcha_done",
@@ -1898,7 +2482,7 @@
           ok: !!capOut.ok,
           manual_failures: Number(capOut.manual_failures || 0),
           fallback_realtime: !!capOut.fallback_realtime,
-          reason: capOut.reason || "",
+          reason: capOut.reason || (capOut.ok ? "" : "max_tries"),
         },
       };
     }
@@ -1955,10 +2539,34 @@
       return false;
     }
     let totalSeconds = await getVideoDurationByHead(videoUrl);
-    if (totalSeconds <= 0) totalSeconds = 3600;
+    const durationProbeFailed = !(totalSeconds > 0);
+    if (durationProbeFailed) {
+      totalSeconds = 600;
+      log(
+        "⚠️ \u672a\u80fd\u63a2\u6d4b\u89c6\u9891\u771f\u5b9e\u603b\u65f6\u957f\uff0c\u6548\u7387\u9636\u6bb5\u5148\u7528\u5360\u4f4d\u503c\uff1b\u82e5\u8f6c\u4e34\u65f61:1\u5c06\u4ece studying-lenard \u7684 lastTime \u8d77\u6bcf60s\u9012\u8fdb",
+        "warn",
+      );
+    }
     const init = await getInitialProgress(courseId, cellId);
     const saved = init && init.cells && init.cells.lastTime ? Number(init.cells.lastTime) : 0;
-    await getVideoRecord(courseId, cellId);
+    // 对齐 py：video-record.IsNeedFaceVerification + 已学满长 → 末尾优先人脸（跳过图形码）
+    let needFaceVerification = false;
+    try {
+      const vr = await getVideoRecord(courseId, cellId);
+      const rawNeed =
+        vr && (vr.IsNeedFaceVerification != null ? vr.IsNeedFaceVerification : vr.isNeedFaceVerification);
+      if (rawNeed === true || rawNeed === 1 || rawNeed === "1" || String(rawNeed).toLowerCase() === "true") {
+        needFaceVerification = true;
+      }
+    } catch (_) {}
+    const initialAtEnd = !!(totalSeconds > 0 && Number(saved || 0) >= Number(totalSeconds));
+    const endFaceNotCaptcha = !!(initialAtEnd && needFaceVerification);
+    if (needFaceVerification || endFaceNotCaptcha) {
+      log(
+        `ℹ️ \u672b\u5c3e\u6838\u9a8c\u5206\u6d41: \u5df2\u5b66=${saved}, \u603b\u957f=${totalSeconds}, IsNeedFaceVerification=${needFaceVerification}, \u672b\u5c3e\u4f18\u5148\u4eba\u8138=${endFaceNotCaptcha}`,
+        true,
+      );
+    }
     if (isRealtimeStudyMode()) {
       logRealtime11User(
         `\u603b\u65f6\u957f ${formatStudyDurationCn(totalSeconds)}\uff0c\u5f53\u524d\u5df2\u5b66\u7ea6 ${formatStudyDurationCn(saved)}\uff1b`,
@@ -1974,8 +2582,13 @@
       title,
       end_position: totalSeconds,
       saved,
+      duration_probe_failed: durationProbeFailed,
       init_cells: init && init.cells ? init.cells : {},
       refresh_force_finalize: !!refreshForceFinalize,
+      need_face_verification: needFaceVerification,
+      IsNeedFaceVerification: needFaceVerification,
+      end_face_not_captcha: endFaceNotCaptcha,
+      initial_at_end: initialAtEnd,
     }, {
       study_mode: state.studyMode,
       enable_refresh_rotation: ENABLE_REFRESH_ROTATION_MODE,
@@ -2900,7 +3513,8 @@
             }, "image/png");
           });
 
-          const md5 = md5Uint8Hex(pngBytes);
+          const prepared = prepareFaceUploadBytes(pngBytes);
+    const md5 = prepared.md5;
           const cfg = await getFaceRecognitionConfig();
           if (!cfg) {
             setStatus("\u83b7\u53d6OBS\u914d\u7f6e\u5931\u8d25\uff0c\u65e0\u6cd5\u63d0\u4ea4\u540e\u53f0\u6838\u9a8c");
@@ -2908,7 +3522,7 @@
             return;
           }
 
-          const uploaded = await uploadPhotoToOBS(pngBytes, md5, cfg, "image/png", "png");
+          const uploaded = await uploadPhotoToOBS(prepared.bytes, md5, cfg, "image/png", "png");
           if (!uploaded || !uploaded.ok) {
             setStatus("\u4e0a\u4f20OBS\u5931\u8d25\uff0c\u65e0\u6cd5\u63d0\u4ea4\u540e\u53f0\u6838\u9a8c");
             if (btnCapture) btnCapture.disabled = false;
@@ -2941,7 +3555,8 @@
             cdnUrl: uploaded.cdnUrl,
             obsUrl: uploaded.obsUrl,
             objectKey: uploaded.objectKey,
-            studentId: resolveLearningUserId(),
+            pngBase64: prepared.pngBase64,
+      studentId: resolveLearningUserId(),
             updatedAt: Date.now(),
           });
           writeFaceCache(cachePayload);
@@ -3032,13 +3647,14 @@
 
           setStatus("\u9884\u68c0\u901a\u8fc7\uff0c\u6b63\u5728\u4e0a\u4f20\u5230OBS\u5e76\u6821\u9a8c\u56fe\u7247\u53ef\u7528\u6027…");
 
-          const md5 = md5Uint8Hex(pngBytes);
+          const prepared = prepareFaceUploadBytes(pngBytes);
+    const md5 = prepared.md5;
           const cfg = await getFaceRecognitionConfig();
           if (!cfg) {
             setStatus("\u83b7\u53d6OBS\u914d\u7f6e\u5931\u8d25\uff0c\u65e0\u6cd5\u63d0\u4ea4\u540e\u53f0\u6838\u9a8c");
             return;
           }
-          const uploaded = await uploadPhotoToOBS(pngBytes, md5, cfg, "image/png", "png");
+          const uploaded = await uploadPhotoToOBS(prepared.bytes, md5, cfg, "image/png", "png");
           if (!uploaded || !uploaded.ok) {
             setStatus("\u4e0a\u4f20OBS\u5931\u8d25\uff0c\u65e0\u6cd5\u63d0\u4ea4\u540e\u53f0\u6838\u9a8c");
             return;
@@ -3065,7 +3681,8 @@
             cdnUrl: uploaded.cdnUrl,
             obsUrl: uploaded.obsUrl,
             objectKey: uploaded.objectKey,
-            studentId: resolveLearningUserId(),
+            pngBase64: prepared.pngBase64,
+      studentId: resolveLearningUserId(),
             updatedAt: Date.now(),
           });
           writeFaceCache(cachePayload);
@@ -3420,19 +4037,36 @@
 }
 
  async function submitFaceVerification(photoUrl, photoMd5, courseId, resourceId, resType) {
+    if (isFaceVerifyLockedToday() || state.faceVerifyBlockedInRun) {
+      return false;
+    }
+
+    // 每次提交前强制换 MD5 再上传，避免 OBS 同链复用 / 平台拒识（对齐 py _unique_face_upload_bytes）
+    let fresh = null;
+    try {
+      fresh = await prepareFreshFaceVerificationUpload(photoUrl, photoMd5);
+    } catch (e) {
+      log(`⚠️ 人脸图唯一化上传失败: ${e && e.message ? e.message : e}`);
+      return false;
+    }
+    if (!fresh || !fresh.cdnUrl || !fresh.md5) {
+      return false;
+    }
+
+    try {
+      await getFaceRecognitionInfo(courseId, resourceId, resType);
+    } catch (_) {}
+
     const verificationData = {
-        url: photoUrl,
-        md5: photoMd5,
+        url: fresh.cdnUrl,
+        md5: fresh.md5,
         courseId: courseId,
         resourceId: resourceId,
         resType: resType
     };
 
-    const verificationJson = JSON.stringify(verificationData);
-
     const encryptedData = await _bp("face", verificationData);
     if (!encryptedData) {
-
         return false;
     }
 
@@ -3450,28 +4084,52 @@
     const requestBody = JSON.stringify({ data: encryptedData });
 
     try {
-        try {
-            const responseText = await fetchRequestText(url, "POST", headers, requestBody);
-
-            return String(responseText).trim() === "true";
-        } catch (fetchErr) {
-
-            const gmRes = await gmRequestWithStatus(url, "POST", headers, requestBody);
-            const gmText = String(gmRes.text || "");
-            if (gmRes.status === 403 && gmText.includes("\u4e09\u6b21\u4eba\u8138\u6838\u9a8c\u5931\u8d25\uff0c\u8bf7\u660e\u65e5\u518d\u8bd5")) {
-              setFaceVerifyLockedToday("\u4e09\u6b21\u4eba\u8138\u6838\u9a8c\u5931\u8d25\uff0c\u8bf7\u660e\u65e5\u518d\u8bd5");
-              state.faceVerifyBlockedInRun = true;
-              log("⛔ \u68c0\u6d4b\u5230\u5e73\u53f0\u5df2\u9501\u5b9a\uff1a\u4e09\u6b21\u4eba\u8138\u6838\u9a8c\u5931\u8d25\uff0c\u8bf7\u660e\u65e5\u518d\u8bd5\uff08\u672c\u6b21\u53ca\u4eca\u65e5\u5c06\u8df3\u8fc7\u540e\u7eed\u6838\u9a8c\uff09");
-              showPanelNotice("\u5e73\u53f0\u63d0\u793a\uff1a\u4e09\u6b21\u4eba\u8138\u6838\u9a8c\u5931\u8d25\uff0c\u8bf7\u660e\u65e5\u518d\u8bd5\uff08\u5df2\u81ea\u52a8\u505c\u6b62\u7ee7\u7eed\u5c1d\u8bd5\uff09", "error", false, 9000);
-            }
-
-            return gmRes.status >= 200 && gmRes.status < 300 && String(gmRes.text).trim() === "true";
+        // 单次 POST：失败不复用同一 MD5 重发（下次 submit 会重新 prepareFresh）
+        const gmRes = await gmRequestWithStatus(url, "POST", headers, requestBody);
+        const gmText = String(gmRes.text || "");
+        if (gmRes.status === 403 && gmText.includes("\u4e09\u6b21\u4eba\u8138\u6838\u9a8c\u5931\u8d25\uff0c\u8bf7\u660e\u65e5\u518d\u8bd5")) {
+          setFaceVerifyLockedToday("\u4e09\u6b21\u4eba\u8138\u6838\u9a8c\u5931\u8d25\uff0c\u8bf7\u660e\u65e5\u518d\u8bd5");
+          state.faceVerifyBlockedInRun = true;
+          log("⛔ \u68c0\u6d4b\u5230\u5e73\u53f0\u5df2\u9501\u5b9a\uff1a\u4e09\u6b21\u4eba\u8138\u6838\u9a8c\u5931\u8d25\uff0c\u8bf7\u660e\u65e5\u518d\u8bd5\uff08\u672c\u6b21\u53ca\u4eca\u65e5\u5c06\u8df3\u8fc7\u540e\u7eed\u6838\u9a8c\uff09");
+          showPanelNotice("\u5e73\u53f0\u63d0\u793a\uff1a\u4e09\u6b21\u4eba\u8138\u6838\u9a8c\u5931\u8d25\uff0c\u8bf7\u660e\u65e5\u518d\u8bd5\uff08\u5df2\u81ea\u52a8\u505c\u6b62\u7ee7\u7eed\u5c1d\u8bd5\uff09", "error", false, 9000);
         }
-    } catch (e) {
 
+        return gmRes.status >= 200 && gmRes.status < 300 && gmText.trim() === "true";
+    } catch (e) {
         return false;
     }
 }
+
+  /** 对齐 py _post_study_lenard_after_face：视频人脸通过后必须绑 study-lenard，否则重提仍报人脸 */
+  async function postStudyLenardAfterFace(courseId, resourceId, videoDuration) {
+    try {
+      const payload = { courseId, cellId: resourceId };
+      const vd = Number(videoDuration);
+      if (Number.isFinite(vd) && vd > 0) payload.videoDuration = Math.round(vd);
+      const enc = await _bp("document", payload);
+      if (!enc) {
+        log("⚠️ \u4eba\u8138\u540e study-lenard \u52a0\u5bc6\u5931\u8d25");
+        return false;
+      }
+      const url = "https://jxjynew.ahjxjy.cn/v1/jxjy-teacher-space-service/api/study/study-lenard";
+      const result = await apiRequest(url, "POST", enc, true);
+      const ok = !!(result && result.code === "allow" && result.isStudy === true);
+      if (ok) log("✅ \u4eba\u8138\u540e study-lenard \u5df2\u7ed1\u5b9a");
+      else log(`⚠️ \u4eba\u8138\u540e study-lenard \u672a\u901a\u8fc7 code=${result && result.code != null ? result.code : "\u65e0"} isStudy=${result && result.isStudy}`);
+      return ok;
+    } catch (e) {
+      log(`⚠️ \u4eba\u8138\u540e study-lenard \u5f02\u5e38: ${e && e.message ? e.message : e}`);
+      return false;
+    }
+  }
+
+  async function finishVideoFaceSuccess(courseId, resourceId, resType) {
+    if (Number(resType) === 1) {
+      const lenardOk = await postStudyLenardAfterFace(courseId, resourceId);
+      if (!lenardOk) return false;
+    }
+    return true;
+  }
 
   async function performFaceRecognitionIdPhotoAttempts(courseId, resourceId, resType, maxAttempts) {
     const n = Math.max(1, Math.min(Number(maxAttempts) || 3, 5));
@@ -3484,7 +4142,10 @@
         const pack = await prepareFaceUploadFromIdPhoto();
 
         if (await submitFaceVerification(pack.cdnUrl, pack.md5, courseId, resourceId, resType)) {
-
+          if (!(await finishVideoFaceSuccess(courseId, resourceId, resType))) {
+            log("❌ \u8bc1\u4ef6\u7167\u4eba\u8138\u901a\u8fc7\u4f46 study-lenard \u672a\u7ed1\u5b9a");
+            continue;
+          }
           const snap = readFaceCache();
           const pinned =
             snap &&
@@ -3528,6 +4189,7 @@ async function performFaceRecognition(courseId, resourceId, resType, options = {
           if (!live) {
             live = await prepareFaceUploadLivePreferred();
           }
+          // submitFaceVerification 内会 prepareFresh（换 nonce→新 MD5→重传），此处不再预先 refresh
           liveOk = await submitFaceVerification(live.cdnUrl, live.md5, courseId, resourceId, resType);
           if (!liveOk && live) {
             log("⚠️ \u6d3b\u4f53\u4f18\u5148 OBS \u5df2\u8bf7\u6c42\u4eba\u8138\u63a5\u53e3\uff0c\u5e73\u53f0\u8fd4\u56de\u672a\u901a\u8fc7\uff08\u975e true\uff09\uff0c\u5c06\u5207\u6362\u8bc1\u4ef6\u7167\u5e76\u591a\u6b21\u5c1d\u8bd5", "warn");
@@ -3537,7 +4199,10 @@ async function performFaceRecognition(courseId, resourceId, resType, options = {
           liveOk = false;
         }
         if (liveOk) {
-
+          if (!(await finishVideoFaceSuccess(courseId, resourceId, resType))) {
+            log("❌ \u6d3b\u4f53\u4eba\u8138\u901a\u8fc7\u4f46 study-lenard \u672a\u7ed1\u5b9a");
+            return false;
+          }
           setFaceCacheStatus("\u5df2\u5c31\u7eea(\u4eba\u8138=\u6d3b\u4f53/OBS\u7f13\u5b58)");
           updateStatus("\u8fd0\u884c\u4e2d");
           return true;
@@ -3883,7 +4548,7 @@ async function performFaceRecognition(courseId, resourceId, resType, options = {
         }
     } catch (_) {}
 
-    return 3600;
+    return 0;
   }
 
   function getVideoDurationByMetadata(videoUrl) {
@@ -4058,7 +4723,7 @@ async function performFaceRecognition(courseId, resourceId, resType, options = {
   }
 
   async function fetchJxjyPanelNotice() {
-    const path = String(state.panelNoticePath || _w(10)).trim() || _w(10);
+    const path = String(state.panelNoticePath || "/api/ahjxjy/panel-notice").trim() || "/api/ahjxjy/panel-notice";
     const origin = jxjyServiceOrigin();
     if (!origin) return;
     const url = `${origin}${path.startsWith("/") ? path : `/${path}`}`;
@@ -4139,7 +4804,7 @@ async function performFaceRecognition(courseId, resourceId, resType, options = {
     if (!u) return "";
     try {
       const o = jxjyServiceOrigin();
-      if (o && u === o) return `${o}${_w(7)}`;
+      if (o && u === o) return `${o}${"/api/ahjxjy/captcha/self-predict"}`;
     } catch (_) {}
     return buildSelfCaptchaPredictUrl(u);
   }
@@ -4218,7 +4883,7 @@ async function performFaceRecognition(courseId, resourceId, resType, options = {
     const o = jxjyServiceOrigin();
     const img = String(base64Image || "").trim();
     if (!o || !img) return { ok: false, text: "", raw: null, reason: "missing_params" };
-    const url = `${o}${_w(14)}`;
+    const url = `${o}${"/api/ahjxjy/captcha/jfbym"}`;
     const payload = await buildCaptchaCloudPayload(img);
     try {
       const res = await new Promise((resolve, reject) => {
@@ -4407,16 +5072,20 @@ async function performFaceRecognition(courseId, resourceId, resType, options = {
   }
 
   async function tryGraphicCaptchaAfterRollback(courseId, cellId, position, faceResourceId = null, opts = {}) {
-    const macroCycles = Math.max(1, Number(opts.maxTries || 6));
-    const manualPromptsPerMacro = Math.max(1, Number(opts.manualPromptsPerMacro || 8));
+    // 硬上限：最多 3 次「识别+提交」尝试，不过则跳过章节（对齐用户要求，禁止无限）
+    const maxVerifyAttempts = Math.max(1, Math.min(3, Number(opts.maxTries || 3)));
+    const manualPromptsPerMacro = Math.max(1, Number(opts.manualPromptsPerMacro || 3));
     const manualFailRealtimeFallback = Math.max(0, Number(opts.manualFailRealtimeFallback || 0));
     let manualFailures = 0;
+    let verifyAttempts = 0;
     const cooldownMs = Math.max(1000, Number(opts.cooldownMs || 5000));
     const progressPos = Math.max(1, Number(position || 1));
     const finalPosition = Math.max(progressPos, Number(opts.finalPosition || progressPos));
     const retryPosition = Math.max(progressPos, Number(opts.retryPosition || progressPos));
-    const maxSelf = Math.max(0, Number(CAPTCHA_SELF_MAX_ROUNDS));
-    const maxCloud = Math.max(0, Number(CAPTCHA_JFBYM_MAX_ROUNDS));
+    // 自建/云码轮次受总次数预算约束，避免一轮宏循环吃光额度后仍无限换图
+    const maxSelf = Math.min(Math.max(0, Number(CAPTCHA_SELF_MAX_ROUNDS)), maxVerifyAttempts);
+    const maxCloud = Math.min(Math.max(0, Number(CAPTCHA_JFBYM_MAX_ROUNDS)), maxVerifyAttempts);
+    const budgetLeft = () => verifyAttempts < maxVerifyAttempts && state.running;
     const submitAfterCaptcha = async (sceneTag = "\u9a8c\u8bc1\u7801") => {
       const res2 = await submitVideoProgressAt(courseId, cellId, retryPosition, faceResourceId, { maxRetries: 1 });
       const code2 = res2?.code;
@@ -4455,120 +5124,109 @@ async function performFaceRecognition(courseId, resourceId, resType, options = {
       (state.captchaJfbymViaProxy !== false || String(state.captchaJfbymToken || "").trim())
     );
 
-    for (let cycle = 1; cycle <= macroCycles && state.running; cycle++) {
+    log(`ℹ️ \u56fe\u5f62\u9a8c\u8bc1\u7801\u6700\u591a ${maxVerifyAttempts} \u6b21\uff0c\u4e0d\u8fc7\u5219\u8df3\u8fc7\u7ae0\u8282`, true);
 
-      if (cycle === 1) {
-        if (!state.captchaSelfApiEnable) {
-          log("⚠️ \u8df3\u8fc7\u81ea\u5efaOCR\uff1aclient-config \u4e2d selfEnabled=false", true);
-        } else if (!String(state.captchaSelfApiUrl || "").trim()) {
+    if (!state.captchaSelfApiEnable) {
+      log("⚠️ \u8df3\u8fc7\u81ea\u5efaOCR\uff1aclient-config \u4e2d selfEnabled=false", true);
+    }
 
-        }
-      }
+    const runVerifyAndResubmit = async (parsedRef, code4, sceneTag) => {
+      if (!budgetLeft()) return { ok: false, exhausted: true };
+      const raw4 = String(code4 || "").replace(/[^0-9A-Za-z]/g, "").trim();
+      if (raw4.length !== 4) return null;
+      verifyAttempts += 1;
+      const codeSend = raw4.toUpperCase();
+      log(`🤖 ${sceneTag}\u8bc6\u522b\u7ed3\u679c\uff1a${raw4}${codeSend !== raw4 ? "\uff08\u63d0\u4ea4\u5927\u5199\uff09" : ""} \uff08${verifyAttempts}/${maxVerifyAttempts}\uff09`, true);
+      await verifyGraphicCodeImage(parsedRef.id, codeSend, courseId, cellId);
+      const post = await submitAfterCaptcha(sceneTag);
+      return post;
+    };
 
-      const runVerifyAndResubmit = async (parsedRef, code4, sceneTag) => {
-        const raw4 = String(code4 || "").replace(/[^0-9A-Za-z]/g, "").trim();
-        if (raw4.length !== 4) return null;
-        const codeSend = raw4.toUpperCase();
-        log(`🤖 ${sceneTag}\u8bc6\u522b\u7ed3\u679c\uff1a${raw4}${codeSend !== raw4 ? "\uff08\u63d0\u4ea4\u5927\u5199\uff09" : ""}`, true);
-        await verifyGraphicCodeImage(parsedRef.id, codeSend, courseId, cellId);
-        const post = await submitAfterCaptcha(sceneTag);
-        return post;
-      };
-
-      if (selfEnabled && maxSelf > 0) {
-        for (let si = 1; si <= maxSelf && state.running; si++) {
-          const pair = await refreshCaptchaWithRetry(`\u81ea\u5efa ${si}/${maxSelf}`);
-          if (!pair) {
-            await sleep(cooldownMs);
-            continue;
-          }
-          const { parsed, pure } = pair;
-          log(`🏠 \u81ea\u5efaOCR \u7b2c${si}/${maxSelf}\u8f6e\uff08\u5df2\u6362\u65b0\u56fe\uff09`, true);
-          const selfRes = await solveCaptchaViaSelfApi(pure, {});
-          const st = cleanCaptchaFourChars(selfRes?.text || "");
-          if (!st) {
-            continue;
-          }
-          const postSelf = await runVerifyAndResubmit(parsed, st, "\u81ea\u5efaOCR");
-          if (postSelf && postSelf.ok) {
-            log("✅ \u9a8c\u8bc1\u7801\u9a8c\u8bc1\u6210\u529f", "info");
-            return postSelf;
-          }
-
-        }
-      }
-
-      if (jfbymCanRun && maxCloud > 0) {
-        for (let ci = 1; ci <= maxCloud && state.running; ci++) {
-          const pair = await refreshCaptchaWithRetry(`\u4e91\u7801 ${ci}/${maxCloud}`);
-          if (!pair) {
-            await sleep(cooldownMs);
-            continue;
-          }
-          const { parsed, pure } = pair;
-          log(`☁️ \u4e91\u7801 \u7b2c${ci}/${maxCloud}\u8f6e\uff08\u5df2\u6362\u65b0\u56fe\uff09`, true);
-          const solved =
-            state.captchaJfbymViaProxy !== false
-              ? await solveCaptchaViaJfbymProxy(pure)
-              : await solveCaptchaViaJfbym(pure, {});
-          const t = String(solved?.text || "").trim();
-          if (!t || t.length !== 4) {
-
-            continue;
-          }
-          const post = await runVerifyAndResubmit(parsed, t, "\u4e91\u7801");
-          if (post && post.ok) {
-            log("✅ \u9a8c\u8bc1\u7801\u9a8c\u8bc1\u6210\u529f", "info");
-            return post;
-          }
-
-        }
-        log(`⚠️ \u4e91\u7801\u5df2\u8bd5\u6ee1 ${maxCloud} \u8f6e\u4ecd\u672a\u901a\u8fc7\uff0c\u8fdb\u5165\u624b\u52a8\u8f93\u5165`, true);
-      }
-
-      let parsedManual = null;
-      for (let mi = 1; mi <= manualPromptsPerMacro && state.running; mi++) {
-        const pairM = await refreshCaptchaWithRetry(`\u624b\u52a8 ${mi}/${manualPromptsPerMacro}`);
-        if (pairM) {
-          parsedManual = pairM.parsed;
-        } else if (!parsedManual) {
-          log("⚠️ \u65e0\u6cd5\u62c9\u56fe\u4f9b\u624b\u52a8\u9a8c\u8bc1\uff0c\u7ed3\u675f\u672c\u5b8f\u5468\u671f", true);
-          break;
-        }
-        log(`✋ \u624b\u52a8\u8f93\u5165\u9a8c\u8bc1\u7801 ${mi}/${manualPromptsPerMacro}\uff08\u5df2\u6362\u65b0\u56fe\uff09`, true);
-        const imageSrc = normalizeBase64ImageSrc(parsedManual.imageCode);
-        const userCode = await promptGraphicCaptcha(imageSrc, {
-          title: "\u672b\u5c3e\u9a8c\u8bc1\uff1a\u56fe\u5f62\u9a8c\u8bc1\u7801",
-          hint: "\u5df2\u56de\u9000\u5230\u7ea690%\u4f4d\u7f6e\u3002\u8bf7\u8f93\u5165\u9a8c\u8bc1\u7801\u5b8c\u6210\u9a8c\u8bc1\u540e\u811a\u672c\u4f1a\u7ee7\u7eed\u63d0\u4ea4\u8fdb\u5ea6\u3002",
-        });
-        const cleaned = String(userCode || "").replace(/[^0-9A-Za-z]/g, "").trim();
-        if (!cleaned) return { ok: false, reason: "cancelled", manual_failures: manualFailures };
-        if (cleaned.length !== 4) {
-
-          await sleep(Math.min(2000, cooldownMs));
+    if (selfEnabled && maxSelf > 0) {
+      for (let si = 1; si <= maxSelf && budgetLeft(); si++) {
+        const pair = await refreshCaptchaWithRetry(`\u81ea\u5efa ${si}/${maxSelf}`);
+        if (!pair) {
+          await sleep(cooldownMs);
           continue;
         }
-        await verifyGraphicCodeImage(parsedManual.id, cleaned.toUpperCase(), courseId, cellId);
-        const post = await submitAfterCaptcha("\u9a8c\u8bc1\u7801");
-        if (post.ok) {
+        const { parsed, pure } = pair;
+        log(`🏠 \u81ea\u5efaOCR \u7b2c${si}/${maxSelf}\u8f6e\uff08\u5df2\u6362\u65b0\u56fe\uff09`, true);
+        const selfRes = await solveCaptchaViaSelfApi(pure, {});
+        const st = cleanCaptchaFourChars(selfRes?.text || "");
+        if (!st) continue;
+        const postSelf = await runVerifyAndResubmit(parsed, st, "\u81ea\u5efaOCR");
+        if (postSelf && postSelf.ok) {
+          log("✅ \u9a8c\u8bc1\u7801\u9a8c\u8bc1\u6210\u529f", "info");
+          return postSelf;
+        }
+      }
+    }
+
+    if (jfbymCanRun && maxCloud > 0 && budgetLeft()) {
+      for (let ci = 1; ci <= maxCloud && budgetLeft(); ci++) {
+        const pair = await refreshCaptchaWithRetry(`\u4e91\u7801 ${ci}/${maxCloud}`);
+        if (!pair) {
+          await sleep(cooldownMs);
+          continue;
+        }
+        const { parsed, pure } = pair;
+        log(`☁️ \u4e91\u7801 \u7b2c${ci}/${maxCloud}\u8f6e\uff08\u5df2\u6362\u65b0\u56fe\uff09`, true);
+        const solved =
+          state.captchaJfbymViaProxy !== false
+            ? await solveCaptchaViaJfbymProxy(pure)
+            : await solveCaptchaViaJfbym(pure, {});
+        const t = String(solved?.text || "").trim();
+        if (!t || t.length !== 4) continue;
+        const post = await runVerifyAndResubmit(parsed, t, "\u4e91\u7801");
+        if (post && post.ok) {
           log("✅ \u9a8c\u8bc1\u7801\u9a8c\u8bc1\u6210\u529f", "info");
           return post;
         }
-        manualFailures += 1;
-        if (manualFailRealtimeFallback > 0 && manualFailures >= manualFailRealtimeFallback) {
-          return {
-            ok: false,
-            reason: "manual_limit",
-            manual_failures: manualFailures,
-            fallback_realtime: true,
-          };
-        }
-
-        await sleep(Math.min(2000, cooldownMs));
       }
-
-      await sleep(cooldownMs);
+      if (budgetLeft()) log(`⚠️ \u4e91\u7801\u672a\u901a\u8fc7\uff0c\u8fdb\u5165\u624b\u52a8\u8f93\u5165`, true);
     }
+
+    let parsedManual = null;
+    for (let mi = 1; mi <= manualPromptsPerMacro && budgetLeft(); mi++) {
+      const pairM = await refreshCaptchaWithRetry(`\u624b\u52a8 ${mi}/${manualPromptsPerMacro}`);
+      if (pairM) {
+        parsedManual = pairM.parsed;
+      } else if (!parsedManual) {
+        log("⚠️ \u65e0\u6cd5\u62c9\u56fe\u4f9b\u624b\u52a8\u9a8c\u8bc1\uff0c\u7ed3\u675f", true);
+        break;
+      }
+      log(`✋ \u624b\u52a8\u8f93\u5165\u9a8c\u8bc1\u7801 ${mi}/${manualPromptsPerMacro}\uff08${verifyAttempts}/${maxVerifyAttempts}\uff09`, true);
+      const imageSrc = normalizeBase64ImageSrc(parsedManual.imageCode);
+      const userCode = await promptGraphicCaptcha(imageSrc, {
+        title: "\u56fe\u5f62\u9a8c\u8bc1\u7801",
+        hint: "\u8bf7\u8f93\u5165\u9a8c\u8bc1\u7801\u5b8c\u6210\u9a8c\u8bc1\u540e\u811a\u672c\u4f1a\u7ee7\u7eed\u8fdb\u884c",
+      });
+      const cleaned = String(userCode || "").replace(/[^0-9A-Za-z]/g, "").trim();
+      if (!cleaned) return { ok: false, reason: "cancelled", manual_failures: manualFailures };
+      if (cleaned.length !== 4) {
+        await sleep(Math.min(2000, cooldownMs));
+        continue;
+      }
+      verifyAttempts += 1;
+      await verifyGraphicCodeImage(parsedManual.id, cleaned.toUpperCase(), courseId, cellId);
+      const post = await submitAfterCaptcha("\u9a8c\u8bc1\u7801");
+      if (post.ok) {
+        log("✅ \u9a8c\u8bc1\u7801\u9a8c\u8bc1\u6210\u529f", "info");
+        return post;
+      }
+      manualFailures += 1;
+      if (manualFailRealtimeFallback > 0 && manualFailures >= manualFailRealtimeFallback) {
+        return {
+          ok: false,
+          reason: "manual_limit",
+          manual_failures: manualFailures,
+          fallback_realtime: true,
+        };
+      }
+      await sleep(Math.min(2000, cooldownMs));
+    }
+
+    log(`⏭️ \u9a8c\u8bc1\u7801 ${maxVerifyAttempts} \u6b21\u672a\u901a\u8fc7\uff0c\u8df3\u8fc7\u7ae0\u8282`, "warn");
     return { ok: false, reason: "max_tries", manual_failures: manualFailures };
   }
 
@@ -4783,10 +5441,12 @@ async function performFaceRecognition(courseId, resourceId, resType, options = {
   function resolveQuestionType(q) {
     const t = Number(q?.Type || 0);
     const n = String(q?.TypeName || "").toLowerCase();
-    if (t === 1 || n.includes("\u5355\u9009")) return "single";
+    // 平台字典 TMLX：1单选 2多选 3判断 6翻译 7问答 8阅读 9完形 12填空
+    // 翻译题带选项，按单选序号提交（对齐 新园区全流程.py）
+    if (t === 1 || t === 6 || n.includes("\u5355\u9009") || n.includes("\u7ffb\u8bd1")) return "single";
     if (t === 2 || n.includes("\u591a\u9009")) return "multiple";
     if (t === 3 || n.includes("\u5224\u65ad")) return "judge";
-    if (t === 4 || n.includes("\u586b\u7a7a")) return "fill";
+    if (t === 4 || t === 12 || n.includes("\u586b\u7a7a")) return "fill";
     if (t === 7 || n.includes("\u95ee\u7b54")) return "wenda";
     if (t === 5 || n.includes("\u7b80\u7b54") || n.includes("\u8bba\u8ff0")) return "essay";
     return "unknown";
@@ -4801,10 +5461,42 @@ async function performFaceRecognition(courseId, resourceId, resType, options = {
     return q?.Id;
   }
 
+  /** 翻译题等：RightAnswer 为 {"1":0,"2":100,...} 时取分值最大的选项序号（对齐 py） */
+  function pickBestIndexFromScoreMap(rightAnswer) {
+    let obj = rightAnswer;
+    if (typeof obj === "string") {
+      const s = obj.trim();
+      if (!(s.startsWith("{") && s.endsWith("}"))) return "";
+      try {
+        obj = JSON.parse(s);
+      } catch (_) {
+        return "";
+      }
+    }
+    if (!obj || typeof obj !== "object" || Array.isArray(obj)) return "";
+    let bestK = "";
+    let bestV = null;
+    for (const [k, v] of Object.entries(obj)) {
+      const fv = Number(v);
+      if (!Number.isFinite(fv)) continue;
+      if (bestV == null || fv > bestV) {
+        bestV = fv;
+        bestK = String(k).trim();
+      }
+    }
+    return bestK;
+  }
+
   function parseRightAnswerIndices(rightAnswer, optionLen) {
-    if (!rightAnswer) return [];
+    if (rightAnswer == null || rightAnswer === "") return [];
+    const maxN = Math.max(10, Number(optionLen || 0) || 0);
+    const best = pickBestIndexFromScoreMap(rightAnswer);
+    if (best && /^\d+$/.test(best)) {
+      const n = Number(best);
+      if (n >= 1 && n <= maxN) return [best];
+    }
     const parts = String(rightAnswer).split(",").map((s) => s.trim()).filter(Boolean);
-    return parts.filter((p) => /^\d+$/.test(p) && Number(p) >= 1 && Number(p) <= Math.max(10, optionLen || 0));
+    return parts.filter((p) => /^\d+$/.test(p) && Number(p) >= 1 && Number(p) <= maxN);
   }
 
   function buildQuestionLookupText(q) {
@@ -4875,25 +5567,194 @@ async function performFaceRecognition(courseId, resourceId, resType, options = {
       .trim();
   }
 
+  function getQuestionOptions(q) {
+    const opts = q?.CourseQuestionOptionList || q?.courseQuestionOptionList;
+    return Array.isArray(opts) ? opts : [];
+  }
+
+  function optionDisplayText(opt) {
+    if (!opt || typeof opt !== "object") return "";
+    const raw = opt.Content ?? opt.content ?? opt.OptionContent ?? opt.Title ?? opt.title ?? opt.Text ?? opt.text ?? "";
+    return stripHtmlText(String(raw || "")).replace(/\s+/g, " ").trim();
+  }
+
+  function optionSubmitIndex(opt, fallbackIdx) {
+    if (opt && typeof opt === "object") {
+      const raw = opt.Sort ?? opt.sort;
+      const n = Number(String(raw == null ? "" : raw).trim());
+      if (Number.isFinite(n) && n > 0) return String(n);
+    }
+    return String(fallbackIdx);
+  }
+
+  function optionsSortIsUnique(options) {
+    const seen = new Set();
+    for (let i = 0; i < (options || []).length; i++) {
+      const key = optionSubmitIndex(options[i], i + 1);
+      if (seen.has(key)) return false;
+      seen.add(key);
+    }
+    return true;
+  }
+
+  function optionAtSubmitIndex(options, index) {
+    if (!options || !options.length) return null;
+    const want = String(index);
+    const useSort = optionsSortIsUnique(options);
+    for (let i = 0; i < options.length; i++) {
+      const cur = useSort ? optionSubmitIndex(options[i], i + 1) : String(i + 1);
+      if (cur === want) return options[i];
+    }
+    const n = Number(want);
+    if (Number.isFinite(n) && n >= 1 && n <= options.length) return options[n - 1];
+    return null;
+  }
+
+  function optionTextLookupMap(options) {
+    const map = Object.create(null);
+    if (!options || !options.length) return map;
+    const useSort = optionsSortIsUnique(options);
+    const put = (key, idx) => {
+      const k = stripHtmlText(String(key || "")).replace(/\s+/g, " ").trim();
+      if (!k || map[k] != null) return;
+      map[k] = String(idx);
+    };
+    for (let i = 0; i < options.length; i++) {
+      const opt = options[i];
+      if (!opt || typeof opt !== "object") continue;
+      const submitIdx = useSort ? optionSubmitIndex(opt, i + 1) : String(i + 1);
+      put(optionDisplayText(opt), submitIdx);
+      for (const k of ["Content", "content", "Title", "title", "OptionContent", "Text", "text", "Name", "name"]) {
+        if (opt[k] != null) put(opt[k], submitIdx);
+      }
+    }
+    return map;
+  }
+
+  function parseAnswerParts(answer) {
+    if (answer == null) return [];
+    if (Array.isArray(answer)) return answer.map((x) => String(x).trim()).filter(Boolean);
+    let s = String(answer).trim();
+    if (!s) return [];
+    try {
+      const j = JSON.parse(s);
+      if (Array.isArray(j)) return j.map((x) => String(x).trim()).filter(Boolean);
+      if (j != null && typeof j !== "object") s = String(j).trim();
+    } catch (_) {}
+    return s.split(/[,，]/).map((x) => x.trim()).filter(Boolean);
+  }
+
+  function answerPartsLookLikeIndices(parts, optionCount) {
+    if (!parts || !parts.length) return false;
+    if (!parts.every((p) => /^\d{1,2}$/.test(p))) return false;
+    const n = Number(optionCount || 0);
+    if (!(n > 0)) return true;
+    return parts.every((p) => {
+      const v = Number(p);
+      return v >= 1 && v <= n;
+    });
+  }
+
+  function optionTextsToIndices(texts, options, qType) {
+    if (!texts || !texts.length || !options || !options.length) return "";
+    const map = optionTextLookupMap(options);
+    const matched = [];
+    for (const raw of texts) {
+      const key = stripHtmlText(String(raw || "")).replace(/\s+/g, " ").trim();
+      if (!key) continue;
+      const hit = map[key];
+      if (!hit) return "";
+      if (!matched.includes(hit)) matched.push(hit);
+    }
+    if (!matched.length) return "";
+    if (qType === "multiple") return matched.sort((a, b) => Number(a) - Number(b)).join(",");
+    return matched[0];
+  }
+
+  function indicesToOptionTexts(answer, options) {
+    const parts = parseAnswerParts(answer);
+    if (!parts.length || !options || !options.length) return [];
+    const texts = [];
+    for (const p of parts) {
+      if (/^\d{1,2}$/.test(p)) {
+        const opt = optionAtSubmitIndex(options, Number(p));
+        const t = optionDisplayText(opt);
+        if (t) texts.push(t);
+      } else {
+        const key = stripHtmlText(String(p)).replace(/\s+/g, " ").trim();
+        if (key) texts.push(key);
+      }
+    }
+    return Array.from(new Set(texts));
+  }
+
+  /** 客观题入库：存选项内容数组（对齐 py），兼容旧序号 */
+  function canonicalizeObjectiveAnswerForBank(answer, q, qType) {
+    if (qType === "fill" || qType === "essay" || qType === "wenda") {
+      return answer == null ? "" : String(answer);
+    }
+    const options = getQuestionOptions(q);
+    if (!options.length) return answer == null ? "" : String(answer);
+    const texts = indicesToOptionTexts(answer, options);
+    if (texts.length) return texts;
+    const parts = parseAnswerParts(answer);
+    return parts.length ? parts : (answer == null ? "" : String(answer));
+  }
+
+  /** 题库答案 -> 当前试卷可提交序号（内容数组优先，旧 "2"/"1,2" 仍可用） */
+  function resolveObjectiveBankAnswer(dbAns, q, qType) {
+    if (qType === "fill" || qType === "essay" || qType === "wenda") {
+      return dbAns == null ? "" : String(dbAns);
+    }
+    const options = getQuestionOptions(q);
+    const optN = options.length;
+    if (Array.isArray(dbAns)) {
+      const mapped = optionTextsToIndices(dbAns, options, qType);
+      if (mapped) {
+        log(`🔁 选项内容→序号：${JSON.stringify(dbAns)} → ${mapped}`);
+        return mapped;
+      }
+      log(`⚠️ 题库选项内容无法匹配当前选项，忽略: ${JSON.stringify(dbAns)}`);
+      return "";
+    }
+    let raw = dbAns;
+    if (typeof raw === "string") {
+      const s = raw.trim();
+      if ((s.startsWith("[") && s.endsWith("]")) || (s.startsWith("{") && s.endsWith("}"))) {
+        try {
+          const j = JSON.parse(s);
+          if (Array.isArray(j)) return resolveObjectiveBankAnswer(j, q, qType);
+        } catch (_) {}
+      }
+    }
+    const parts = parseAnswerParts(raw);
+    if (!parts.length) return "";
+    if (optN && answerPartsLookLikeIndices(parts, optN)) {
+      return parts.length > 1 ? parts.join(",") : parts[0];
+    }
+    const mapped = optionTextsToIndices(parts, options, qType);
+    if (mapped) {
+      log(`🔁 选项内容(字符串)→序号：${JSON.stringify(parts)} → ${mapped}`);
+      return mapped;
+    }
+    return "";
+  }
+
   function getOptionTextByIndex(q, idx1) {
-    const idx = Number(idx1 || 0);
-    const opts = Array.isArray(q?.CourseQuestionOptionList) ? q.CourseQuestionOptionList : [];
-    if (!opts.length || !Number.isFinite(idx) || idx <= 0) return "";
-    const bySort = opts.slice().sort((a, b) => Number(a?.Sort || 0) - Number(b?.Sort || 0));
-    const pick = bySort[idx - 1] || opts[idx - 1] || null;
-    const raw = pick?.Content ?? pick?.OptionContent ?? pick?.Title ?? pick?.Text ?? "";
-    return stripHtmlText(raw);
+    const opts = getQuestionOptions(q);
+    const pick = optionAtSubmitIndex(opts, idx1);
+    return pick ? optionDisplayText(pick) : "";
   }
 
   function formatAnswerWithOptionText(q, qType, bankAnswerRaw) {
-    const a0 = String(bankAnswerRaw == null ? "" : bankAnswerRaw).trim();
-    if (!a0) return "";
-    if (qType === "fill" || qType === "essay" || qType === "wenda") return a0;
+    const resolved = resolveObjectiveBankAnswer(bankAnswerRaw, q, qType) || String(bankAnswerRaw == null ? "" : bankAnswerRaw).trim();
+    if (!resolved) return "";
+    if (qType === "fill" || qType === "essay" || qType === "wenda") return resolved;
     if (qType === "judge") {
-      const n = Number(String(a0).split(",")[0]);
-      return n === 2 ? "\u9519\u8bef" : "\u6b63\u786e";
+      const n = Number(String(resolved).split(",")[0]);
+      return n === 2 ? "错误" : "正确";
     }
-    const parts = a0.replace(/\uff0c/g, ",").split(",").map((x) => x.trim()).filter(Boolean);
+    const parts = String(resolved).replace(/，/g, ",").split(",").map((x) => x.trim()).filter(Boolean);
     const items = parts.map((p) => {
       const n = Number(p);
       if (!Number.isFinite(n) || n <= 0) return "";
@@ -4901,18 +5762,31 @@ async function performFaceRecognition(courseId, resourceId, resType, options = {
       if (code < 65 || code > 90) return "";
       const letter = String.fromCharCode(code);
       const text = getOptionTextByIndex(q, n);
-      return text ? `${letter}\uff1a${text}` : letter;
+      return text ? `${letter}：${text}` : letter;
     }).filter(Boolean);
     if (!items.length) return "";
     if (qType === "multiple") return Array.from(new Set(items)).join("; ");
     return items[0];
   }
 
-  function normalizeCloudAnswer(raw, qType, optionLen) {
+  function normalizeCloudAnswer(raw, qType, optionLen, question) {
+    if (question && (qType === "single" || qType === "multiple" || qType === "judge")) {
+      const mapped = resolveObjectiveBankAnswer(raw, question, qType);
+      if (mapped) return mapped;
+    }
     let s0 = String(raw == null ? "" : raw).trim();
+    // 兼容历史：answer 可能是 JSON 字符串 / 内容数组字符串
     try {
       const j = JSON.parse(s0);
-      if (j != null) s0 = String(j).trim();
+      if (Array.isArray(j)) {
+        if (question) {
+          const mapped = resolveObjectiveBankAnswer(j, question, qType);
+          if (mapped) return mapped;
+        }
+        s0 = j.map((x) => String(x).trim()).filter(Boolean).join(",");
+      } else if (j != null && typeof j !== "object") {
+        s0 = String(j).trim();
+      }
     } catch (_) {}
     if (
       (s0.startsWith("\"") && s0.endsWith("\"")) ||
@@ -4921,16 +5795,16 @@ async function performFaceRecognition(courseId, resourceId, resType, options = {
       s0 = s0.slice(1, -1).trim();
     }
     if (!s0) return "";
-    const s = s0.replace(/\uff0c/g, ",").replace(/\u3001/g, ",").replace(/\s+/g, "");
+    const s = s0.replace(/，/g, ",").replace(/、/g, ",").replace(/\s+/g, "");
     if (qType === "fill" || qType === "essay" || qType === "wenda") return s0;
     if (qType === "judge") {
       const up = s.toUpperCase();
-      if (["1", "\u5bf9", "\u6b63\u786e", "TRUE", "T", "√"].includes(up)) return "1";
-      if (["2", "\u9519", "\u9519\u8bef", "FALSE", "F", "×"].includes(up)) return "2";
+      if (["1", "对", "正确", "TRUE", "T", "√"].includes(up)) return "1";
+      if (["2", "错", "错误", "FALSE", "F", "×"].includes(up)) return "2";
       return "1";
     }
     if (qType === "single") {
-      const m = s.match(/\d+/);
+      const m = s.match(/^\d+$/);
       if (m) {
         const n = Number(m[0]);
         if (n >= 1 && n <= Math.max(10, optionLen || 0)) return String(n);
@@ -4940,7 +5814,8 @@ async function performFaceRecognition(courseId, resourceId, resType, options = {
         const idx = c - 64;
         if (idx >= 1 && idx <= Math.max(10, optionLen || 0)) return String(idx);
       }
-      return "1";
+      // 非序号文本：无题目上下文时无法映射，返回空避免误交 "1"
+      return "";
     }
     if (qType === "multiple") {
       const set = new Set();
@@ -4959,7 +5834,7 @@ async function performFaceRecognition(courseId, resourceId, resType, options = {
         }
       });
       const arr = Array.from(set).sort((a, b) => Number(a) - Number(b));
-      return arr.length ? arr.join(",") : "1,2";
+      return arr.length ? arr.join(",") : "";
     }
     return s0;
   }
@@ -4969,9 +5844,10 @@ async function performFaceRecognition(courseId, resourceId, resType, options = {
     if (!q) return null;
     try {
       await _el(false);
-      const data = await _rq(_w(13), "POST", { question_text: q });
+      const data = await _rq("/api/ahjxjy/exam-qa/get", "POST", { question_text: q });
       if (data && data.found && data.answer != null) {
-        return { answer: String(data.answer), questionHash: String(data.question_hash || "") };
+        // keep raw answer (may be JSON content array) for resolveObjectiveBankAnswer
+        return { answer: data.answer, questionHash: String(data.question_hash || "") };
       }
     } catch (_) {}
     return null;
@@ -4979,11 +5855,14 @@ async function performFaceRecognition(courseId, resourceId, resType, options = {
 
   async function _qu(questionText, questionType, answer, source = "tampermonkey_homework") {
     const q = String(questionText || "").trim();
-    const a = String(answer == null ? "" : answer).trim();
+    let a = answer;
+    if (Array.isArray(a)) a = JSON.stringify(a);
+    else if (a != null && typeof a === "object") a = JSON.stringify(a);
+    else a = String(a == null ? "" : a).trim();
     if (!q || !a) return false;
     try {
       await _el(false);
-      await _rq(_w(11), "POST", {
+      await _rq("/api/ahjxjy/exam-qa/upsert", "POST", {
         question_text: q,
         question_type: String(questionType || ""),
         answer: a,
@@ -5000,7 +5879,7 @@ async function performFaceRecognition(courseId, resourceId, resType, options = {
     if (!p) return null;
     try {
       await _el(false);
-      const data = await _rq(_w(12), "POST", { prompt: p });
+      const data = await _rq("/api/ahjxjy/exam-ai/answer", "POST", { prompt: p });
       const txt = String(data?.answer || "").trim();
       if (!txt) {
         const dbg = data?.debug || data?.detail || data?.message || "";
@@ -5037,7 +5916,7 @@ async function performFaceRecognition(courseId, resourceId, resType, options = {
     return `\u4f60\u662f\u8003\u8bd5\u7b54\u9898\u52a9\u624b\u3002\u8bf7\u6839\u636e\u9898\u76ee\u7ed9\u51fa\u6700\u53ef\u80fd\u7b54\u6848\uff0c\u53ea\u8fd4\u56deJSON\uff0c\u4e0d\u8981\u89e3\u91ca\u3002\n\u9898\u578b:${typeHint}\n\u9898\u76ee:\n${qText}\n\u9009\u9879:\n${optionText}\n\u8fd4\u56de\u683c\u5f0f:\n{"answer":"..."}\n\u89c4\u5219:\n- \u5355\u9009\u8fd4\u56de 1-\u9009\u9879\u6570 \u7684\u6570\u5b57\n- \u591a\u9009\u8fd4\u56de \u9017\u53f7\u5206\u9694\u6570\u5b57 \u4f8b\u5982 1,3\n- \u5224\u65ad\u8fd4\u56de 1(\u6b63\u786e) \u6216 2(\u9519\u8bef)\n- \u586b\u7a7a\u9898\u8fd4\u56de“\u586b\u5199\u5185\u5bb9”\u7684\u6587\u672c\uff08\u4e0d\u8981\u8fd4\u56de\u6570\u5b57\u5e8f\u53f7\uff09\n- \u95ee\u7b54\u9898/\u7b80\u7b54\u9898\u8fd4\u56de\u7b26\u5408\u8003\u8bd5\u7b54\u9898\u7684\u4f5c\u7b54\u6587\u672c\uff08\u4e0d\u8981\u8fd4\u56de\u6570\u5b57\u5e8f\u53f7\uff09\n- \u65e0\u6cd5\u786e\u5b9a\u4e5f\u5fc5\u987b\u7ed9\u51fa\u6700\u53ef\u80fd\u7b54\u6848\uff08\u4e3b\u89c2\u9898\u4e5f\u8981\u7ed9\u6587\u672c\uff09`;
   }
 
-  function parseAiAnswerContent(text, qType, optionLen) {
+  function parseAiAnswerContent(text, qType, optionLen, question) {
     const raw = String(text || "").trim();
     if (!raw) return "";
     let ans = "";
@@ -5059,7 +5938,8 @@ async function performFaceRecognition(courseId, resourceId, resType, options = {
       if (m2 && m2[1] != null) ans = String(m2[1]).trim();
     }
     if (!ans) ans = raw;
-    const normalized = normalizeCloudAnswer(ans, qType, optionLen);
+    // 传入 question：题库/AI 若返回选项内容，可映射到当前序号（对齐 py）
+    const normalized = normalizeCloudAnswer(ans, qType, optionLen, question);
 
     if (String(qType || "") && ["essay", "wenda", "fill"].includes(String(qType))) {
       if (/^\d+$/.test(String(normalized || "").trim())) {
@@ -5089,14 +5969,15 @@ async function performFaceRecognition(courseId, resourceId, resType, options = {
         setExamDebug({ aiTried: "yes" });
       }
     } catch (_) {}
-    const options = Array.isArray(q?.CourseQuestionOptionList) ? q.CourseQuestionOptionList : [];
+    const options = getQuestionOptions(q);
     const prompt = buildExamAiPrompt(q, qType);
     const txt = await _ai(prompt);
     if (!txt) {
       try { setExamDebug({ aiStage: "cloud_ai_empty" }); } catch (_) {}
       return null;
     }
-    const ans = parseAiAnswerContent(txt, qType, options.length);
+    // 传入 q：AI 若返回选项正文可映射到序号（对齐 normalizeCloudAnswer/question）
+    const ans = parseAiAnswerContent(txt, qType, options.length, q);
     if (!ans) {
       try { setExamDebug({ aiStage: "parse_ai_failed" }); } catch (_) {}
       return null;
@@ -5105,20 +5986,137 @@ async function performFaceRecognition(courseId, resourceId, resType, options = {
     return ans;
   }
 
-  async function syncAssignmentPaperToCloudBank(courseId, assignmentId) {
-    const details = await loadAssignmentDetails(courseId, assignmentId, { waitIfPaperGenerating: false });
-    if (!details?.paperJson) {
-      log(`[\u4f5c\u4e1a] \u63d0\u4ea4\u540e\u540c\u6b65\u9898\u5e93\uff1a\u65e0 paperJson`, true);
-      return 0;
+  async function syncAssignmentPaperToCloudBank(courseId, assignmentId, paperId) {
+    return saveAssignmentAnswersAfterSubmit(courseId, assignmentId, paperId, "\u4f5c\u4e1a");
+  }
+
+  function normalizePreviewPaperSections(data) {
+    const paperList = data?.paperList;
+    if (!Array.isArray(paperList)) return [];
+    const normalized = [];
+    for (const sec of paperList) {
+      if (!sec || typeof sec !== "object") continue;
+      normalized.push({
+        QuestionType: sec.QuestionType || sec.questionType,
+        QuestionTypeName: sec.QuestionTypeName || sec.questionTypeName,
+        GetPaperList: sec.GetPaperList || sec.getPaperList || [],
+      });
     }
+    return normalized;
+  }
+
+  function parseAssignmentScoreValue(val) {
+    if (val == null || val === "") return null;
+    const n = Number(val);
+    return Number.isFinite(n) ? n : null;
+  }
+
+  function extractScoreFromAssignmentRecord(record) {
+    if (!record || typeof record !== "object") return null;
+    const keys = [
+      "score", "Score", "grade", "Grade",
+      "totalScore", "TotalScore", "paperScore", "PaperScore",
+      "stuScore", "StuScore", "studentScore", "StudentScore",
+    ];
+    for (const key of keys) {
+      const val = parseAssignmentScoreValue(record[key]);
+      if (val != null) return val;
+    }
+    return null;
+  }
+
+  async function previewAssignmentRecord(courseId, assignmentId, paperId) {
+    if (!paperId) return null;
+    const url = "https://jxjynew.ahjxjy.cn/v1/jxjy-teacher-space-service/api/paper/preview-assignment-record";
+    const res = await apiRequest(url, "POST", {
+      courseId,
+      assignmentId,
+      paperId,
+    }, false);
+    return res && typeof res === "object" ? res : null;
+  }
+
+  async function getAssignmentScore(courseId, assignmentId, waitGradingSec = 3) {
+    if (waitGradingSec > 0) await sleep(Math.round(waitGradingSec * 1000));
+    const cid = String(courseId || "");
+    const aid = String(assignmentId || "");
+    const list = await fetchCourseAssignments(courseId);
+    for (const item of list) {
+      if (String(item?.courseId || "") !== cid) continue;
+      if (String(item?.assignmentId || item?.Id || "") !== aid) continue;
+      const score = extractScoreFromAssignmentRecord(item);
+      if (score != null) return score;
+    }
+    const details = await loadAssignmentDetails(courseId, assignmentId, { waitIfPaperGenerating: false });
+    if (details) {
+      const score = extractScoreFromAssignmentRecord(details);
+      if (score != null) return score;
+    }
+    return null;
+  }
+
+  function isAssignmentSubjective(q, qType) {
+    const t = Number(q?.Type || 0);
+    const n = String(q?.TypeName || q?.QuestionTypeName || "").toLowerCase();
+    // 平台客观题型直接排除（避免题干含「分析/案例」被当成主观）
+    if (t === 1 || t === 2 || t === 3 || t === 6 || t === 8 || t === 9) return false;
+    if (n.includes("\u5355\u9009") || n.includes("\u591a\u9009") || n.includes("\u5224\u65ad") || n.includes("\u7ffb\u8bd1")) return false;
+    if (t === 4 || t === 12 || n.includes("\u586b\u7a7a")) return true;
+    if (t === 7 || n.includes("\u95ee\u7b54")) return true;
+    if (t === 5 || n.includes("\u7b80\u7b54") || n.includes("\u8bba\u8ff0")) return true;
+    const qt = String(qType || resolveExamQuestionType(q) || "");
+    return qt === "fill" || qt === "essay" || qt === "wenda";
+  }
+
+  function assignmentSubjectiveHasPaperAnswer(q) {
+    const ra = q?.RightAnswer;
+    return ra != null && String(ra).trim() !== "";
+  }
+
+  async function assignmentQuestionHasBankAnswer(q) {
+    for (const text of buildQuestionLookupCandidates(q)) {
+      try {
+        const hit = await _qg(text);
+        if (hit?.answer) return true;
+      } catch (_) {}
+    }
+    return false;
+  }
+
+  async function assignmentSubjectiveFromDbOrMarker(q) {
+    if (await assignmentQuestionHasBankAnswer(q)) return true;
+    return assignmentSubjectiveHasPaperAnswer(q);
+  }
+
+  function assignmentPaperHasParsedMarkers(questions) {
+    return Array.isArray(questions) && questions.some((q) => hasRightAnswerInfo(q));
+  }
+
+  function assignmentPaperAllowsQualityPass(questions) {
+    if (!Array.isArray(questions) || !questions.length) return false;
+    const objectiveQs = questions.filter((q) => !isAssignmentSubjective(q, resolveExamQuestionType(q)));
+    const subjectiveQs = questions.filter((q) => isAssignmentSubjective(q, resolveExamQuestionType(q)));
+    // 纯客观卷须满分，不走「质量达标」早退
+    if (!subjectiveQs.length) return false;
+    if (!objectiveQs.length) return true;
+    // 关键点：预览卷 isShowAnswers=1 时几乎每题都有 RightAnswer，
+    // 「有标答」≠「已答对」。必须客观题实际已全对才允许早退，否则 31 分也会被误判达标并跳过重做。
+    if (!objectiveQs.every((q) => hasRightAnswerInfo(q))) return false;
+    if (objectiveIsFullScore(questions)) return true;
+    if (objectiveAnswersAllCorrect(questions)) return true;
+    return false;
+  }
+
+  async function assignmentMeetsQualityPassPolicy(courseId, assignmentId) {
+    const details = await loadAssignmentDetails(courseId, assignmentId, { waitIfPaperGenerating: true });
+    if (!details?.paperJson) return false;
     let decrypted = "";
     try {
       decrypted = await _ad(String(details.paperJson || ""), "assignment_payload");
-    } catch (e) {
-      log(`[\u4f5c\u4e1a] \u63d0\u4ea4\u540e\u540c\u6b65\u9898\u5e93\uff1a\u89e3\u5bc6\u5931\u8d25 ${(e && e.message) || e}`, true);
-      return 0;
+    } catch (_) {
+      return false;
     }
-    if (!decrypted) return 0;
+    if (!decrypted) return false;
     let sections = [];
     try {
       sections = JSON.parse(decrypted);
@@ -5126,62 +6124,325 @@ async function performFaceRecognition(courseId, resourceId, resType, options = {
       sections = [];
     }
     const questions = extractQuestionsFromPaperSections(sections);
-    const scoreVal = Number(details.score ?? details.Score ?? 0);
-    const canInfer = Number.isFinite(scoreVal) && scoreVal >= 100;
-    let cached = 0;
-    for (const q of questions) {
-      const qt = resolveExamQuestionType(q);
-      let known = extractKnownAnswerFromQuestion(q, qt);
-      if (!known && canInfer && ["single", "multiple", "judge"].includes(qt)) {
-        const sa = String(q?.StudentAnswer ?? q?.studentAnswer ?? q?.student_answer ?? "").trim();
-        if (sa) {
-          const optionLen = Array.isArray(q?.CourseQuestionOptionList) ? q.CourseQuestionOptionList.length : 0;
-          known = normalizeCloudAnswer(sa, qt, optionLen);
-        }
-      }
-      if (!known) continue;
-      for (const text of buildQuestionLookupCandidates(q)) {
-        let existed = null;
-        try {
-          existed = await _qg(text);
-        } catch (_) {}
-        if (existed?.answer) break;
-        const ok = await _qu(text, qt, known, "homework_post_submit");
-        if (ok) {
-          cached += 1;
-          break;
-        }
-      }
+    if (!assignmentPaperAllowsQualityPass(questions)) return false;
+    const subjectiveQs = questions.filter((q) => isAssignmentSubjective(q, resolveExamQuestionType(q)));
+    for (const q of subjectiveQs) {
+      if (!(await assignmentSubjectiveFromDbOrMarker(q))) return false;
     }
-    if (cached > 0) log(`📚 \u4f5c\u4e1a\u63d0\u4ea4\u540e\u5df2\u540c\u6b65 ${cached} \u9898\u5230\u4e91\u7aef\u9898\u5e93`, "info");
-    else log(`[\u4f5c\u4e1a] \u63d0\u4ea4\u540e\u540c\u6b65\u9898\u5e93\uff1a\u672a\u53d1\u73b0\u53ef\u5199\u5165\u6807\u7b54\uff08\u5171 ${questions.length} \u9898\uff09`, true);
-    return cached;
+    log("✅ \u4f5c\u4e1a\u7b56\u7565\u8fbe\u6807\uff1a\u5ba2\u89c2\u5df2\u5168\u5bf9\u4e14\u4e3b\u89c2\u9898\u5747\u53ef\u9898\u5e93/\u6807\u7b54", "info");
+    return true;
   }
 
   function extractKnownAnswerFromQuestion(q, qType) {
-    const rightAnswer = q?.RightAnswer;
-    const options = Array.isArray(q?.CourseQuestionOptionList) ? q.CourseQuestionOptionList : [];
+    const rightAnswer = q?.RightAnswer ?? q?.rightAnswer;
+    const options = getQuestionOptions(q);
     if (qType === "essay" || qType === "wenda" || qType === "fill") {
+      // 主观题 RightAnswer 若误写成分值映射，不当文本提交
+      if (pickBestIndexFromScoreMap(rightAnswer)) return "";
       return rightAnswer ? String(rightAnswer) : "";
     }
-    if (!options.length) return rightAnswer ? String(rightAnswer) : "";
+    if (!options.length) {
+      const bestNoOpt = pickBestIndexFromScoreMap(rightAnswer);
+      if (bestNoOpt) return bestNoOpt;
+      return rightAnswer ? String(rightAnswer) : "";
+    }
 
     let correct = [];
+    const useSort = optionsSortIsUnique(options);
     for (let i = 0; i < options.length; i++) {
       const opt = options[i];
-      if (Number(opt?.IsAnswer) === 1) correct.push(String(opt?.Sort || i + 1));
+      if (Number(opt?.IsAnswer) === 1 || Number(opt?.isAnswer) === 1) {
+        correct.push(useSort ? optionSubmitIndex(opt, i + 1) : String(i + 1));
+      }
     }
     if (!correct.length) {
+      // 翻译题等：优先从 {"1":0,"2":100} 取最高分选项
       correct = parseRightAnswerIndices(rightAnswer, options.length);
     }
     if (!correct.length) return "";
 
+    let indexAns = "";
     if (qType === "multiple") {
-      const uniq = Array.from(new Set(correct));
-      return uniq.join(",");
+      indexAns = Array.from(new Set(correct)).join(",");
+    } else if (qType === "judge") {
+      indexAns = String(correct[0]) === "2" ? "2" : "1";
+    } else {
+      // single / 翻译：分值映射通常一项；IsAnswer 多标时与历史一致取最后一个
+      indexAns = correct[correct.length - 1] || "";
     }
-    if (qType === "judge") return String(correct[0]) === "2" ? "2" : "1";
-    return correct[correct.length - 1] || "";
+    // 客观题入库存选项内容（对齐 py）；提交仍用 resolve 后的序号
+    return canonicalizeObjectiveAnswerForBank(indexAns, q, qType);
+  }
+
+  function objectiveScoresFromQuestions(questions) {
+    let earned = 0;
+    let maximum = 0;
+    for (const q of questions) {
+      if (!q || typeof q !== "object") continue;
+      if (isAssignmentSubjective(q, resolveExamQuestionType(q))) continue;
+      const scoreKeys = ["Score", "score", "stuScore", "StuScore", "studentScore", "StudentScore"];
+      const maxKeys = ["TotalScore", "totalScore", "paperScore", "PaperScore", "QuestionScore", "questionScore"];
+      let qEarned = null;
+      let qMax = null;
+      for (const k of scoreKeys) {
+        const v = parseAssignmentScoreValue(q[k]);
+        if (v != null) qEarned = v;
+      }
+      for (const k of maxKeys) {
+        const v = parseAssignmentScoreValue(q[k]);
+        if (v != null) qMax = v;
+      }
+      if (qEarned != null) earned += qEarned;
+      if (qMax != null && qMax > 0) maximum += qMax;
+      else if (qEarned != null && qEarned > 0) maximum += qEarned;
+    }
+    return { earned, maximum };
+  }
+
+  function objectiveAnswersAllCorrect(questions) {
+    let checked = 0;
+    for (const q of questions) {
+      if (!q || typeof q !== "object") continue;
+      if (isAssignmentSubjective(q, resolveExamQuestionType(q))) continue;
+      const qt = resolveExamQuestionType(q);
+      const known = extractKnownAnswerFromQuestion(q, qt);
+      const right = String(resolveObjectiveBankAnswer(known, q, qt) || normalizeCloudAnswer(known, qt, (q?.CourseQuestionOptionList || []).length, q) || "").trim();
+      const student = String(resolveObjectiveBankAnswer(q?.StudentAnswer ?? q?.studentAnswer ?? q?.student_answer ?? q?.MyAnswer ?? "", q, qt) || normalizeCloudAnswer(q?.StudentAnswer ?? q?.studentAnswer ?? q?.student_answer ?? q?.MyAnswer ?? "", qt, (q?.CourseQuestionOptionList || []).length, q) || "").trim();
+      if (!right || !student) return false;
+      checked += 1;
+      if (right !== student) return false;
+    }
+    return checked > 0;
+  }
+
+  function objectiveIsFullScore(questions) {
+    const { earned, maximum } = objectiveScoresFromQuestions(questions);
+    if (maximum > 0) return earned / maximum >= 0.99;
+    return objectiveAnswersAllCorrect(questions);
+  }
+
+  async function buildAssignmentSessionFromQuestions(questions, usedPlatformAnswers) {
+    const session = {
+      has_subjective: false,
+      subjective_src_ok: {},
+      objective_total: 0,
+      objective_known: 0,
+      questions: Array.isArray(questions) ? questions : [],
+    };
+    for (const q of session.questions) {
+      const qid = String(q?.Id || q?.id || "");
+      if (!qid) continue;
+      const qt = resolveExamQuestionType(q);
+      const isSubj = isAssignmentSubjective(q, qt);
+      let fromKnown = false;
+      if (usedPlatformAnswers && hasRightAnswerInfo(q)) fromKnown = true;
+      else if (await assignmentQuestionHasBankAnswer(q)) fromKnown = true;
+      else if (hasRightAnswerInfo(q)) fromKnown = true;
+      if (isSubj) {
+        session.has_subjective = true;
+        session.subjective_src_ok[qid] = fromKnown || assignmentSubjectiveHasPaperAnswer(q);
+      } else {
+        session.objective_total += 1;
+        if (fromKnown) session.objective_known += 1;
+      }
+    }
+    return session;
+  }
+
+  function evaluateAssignmentRedoPolicy(score, redoCount, session, questions) {
+    const fullTarget = ASSIGNMENT_FULL_SCORE;
+    const maxRedo = ASSIGNMENT_MAX_REDO_COUNT;
+    const sess = session && typeof session === "object" ? session : {};
+    const qs = Array.isArray(questions) ? questions : (sess.questions || []);
+    if (typeof score === "number" && Number.isFinite(score) && score >= fullTarget) {
+      return { passed: true, needRedo: false, detail: `\u5df2\u8fbe ${fullTarget} \u5206` };
+    }
+    let hasSubjective = !!sess.has_subjective;
+    if (!hasSubjective && qs.length) {
+      hasSubjective = qs.some((q) => isAssignmentSubjective(q, resolveExamQuestionType(q)));
+    }
+    if (!hasSubjective) {
+      const needRedo = typeof score === "number" && score < fullTarget && redoCount < maxRedo;
+      if (redoCount >= maxRedo) {
+        return {
+          passed: false,
+          needRedo: false,
+          detail: `\u7eaf\u5ba2\u89c2\u9898\u987b\u6ee1\u5206\uff0c\u5df2\u91cd\u505a ${maxRedo} \u6b21\uff08\u5f53\u524d ${score} \u5206\uff09`,
+        };
+      }
+      return {
+        passed: false,
+        needRedo,
+        detail: `\u7eaf\u5ba2\u89c2\u9898\u987b ${fullTarget} \u5206\uff08\u5f53\u524d ${score} \u5206\uff09`,
+      };
+    }
+    let objectiveFull = objectiveIsFullScore(qs);
+    const objTotal = Number(sess.objective_total || 0);
+    const objKnown = Number(sess.objective_known || 0);
+    if (!objectiveFull && objTotal > 0 && objKnown >= objTotal) objectiveFull = true;
+    let subjectiveOk = true;
+    const flags = sess.subjective_src_ok || {};
+    if (flags && Object.keys(flags).length) {
+      subjectiveOk = Object.values(flags).every(Boolean);
+    } else if (qs.length) {
+      const subjQs = qs.filter((q) => isAssignmentSubjective(q, resolveExamQuestionType(q)));
+      subjectiveOk = subjQs.length > 0;
+      for (const q of subjQs) {
+        if (!assignmentSubjectiveHasPaperAnswer(q)) {
+          subjectiveOk = false;
+          break;
+        }
+      }
+    } else {
+      subjectiveOk = false;
+    }
+    if (objectiveFull && subjectiveOk) {
+      const scTxt = typeof score === "number" ? score : "\u5f85\u67e5";
+      return {
+        passed: true,
+        needRedo: false,
+        detail: `\u5ba2\u89c2\u9898\u5168\u5bf9\u4e14\u4e3b\u89c2\u9898\u5747\u6765\u81ea\u9898\u5e93/\u6807\u7b54\uff08\u5206\u6570 ${scTxt}\uff09`,
+      };
+    }
+    if (redoCount >= maxRedo) {
+      return {
+        passed: false,
+        needRedo: false,
+        detail: `\u5df2\u91cd\u505a ${maxRedo} \u6b21\u4ecd\u672a\u8fbe\u6807\uff08\u5206\u6570 ${score}\uff09`,
+      };
+    }
+    return {
+      passed: false,
+      needRedo: true,
+      detail: `\u542b\u4e3b\u89c2\u9898\uff0c\u5ba2\u89c2\u5168\u5bf9=${objectiveFull}\uff08\u4f1a\u8bdd ${objKnown}/${objTotal}\uff09\uff0c\u4e3b\u89c2\u5747\u9898\u5e93/\u6807\u7b54=${subjectiveOk}\uff0c\u5206\u6570=${score}`,
+    };
+  }
+
+  async function saveQuestionsToCloudBank(questions, scoreOrDetails, sourceLabel) {
+    if (!Array.isArray(questions) || !questions.length) return { marker: 0, infer: 0, total: 0 };
+    const scoreVal = Number(
+      typeof scoreOrDetails === "object" && scoreOrDetails
+        ? (scoreOrDetails.score ?? scoreOrDetails.Score ?? 0)
+        : (scoreOrDetails ?? 0),
+    );
+    let markerCount = 0;
+    let inferCount = 0;
+    for (const q of questions) {
+      const qt = resolveExamQuestionType(q);
+      const known = extractKnownAnswerFromQuestion(q, qt);
+      if (!known) continue;
+      for (const text of buildQuestionLookupCandidates(q)) {
+        try {
+          const existed = await _qg(text);
+          if (existed?.answer) break;
+          const ok = await _qu(text, qt, known, "homework_post_submit");
+          if (ok) {
+            markerCount += 1;
+            break;
+          }
+        } catch (_) {}
+      }
+    }
+    const canInfer = Number.isFinite(scoreVal) && scoreVal >= ASSIGNMENT_FULL_SCORE;
+    if (canInfer && markerCount <= 0) {
+      for (const q of questions) {
+        const qt = resolveExamQuestionType(q);
+        if (!["single", "multiple", "judge"].includes(qt)) continue;
+        for (const text of buildQuestionLookupCandidates(q)) {
+          try {
+            const existed = await _qg(text);
+            if (existed?.answer) break;
+            const studentAnsRaw = String(q?.StudentAnswer ?? q?.studentAnswer ?? q?.student_answer ?? "").trim();
+            if (!studentAnsRaw) break;
+            const optionLen = Array.isArray(q?.CourseQuestionOptionList) ? q.CourseQuestionOptionList.length : 0;
+            const normalized = normalizeCloudAnswer(studentAnsRaw, qt, optionLen, q);
+            if (!normalized) break;
+            const toStore = canonicalizeObjectiveAnswerForBank(normalized, q, qt);
+            const ok = await _qu(text, qt, toStore, "homework_score_infer");
+            if (ok) {
+              inferCount += 1;
+              break;
+            }
+          } catch (_) {}
+        }
+      }
+    }
+    const total = markerCount + inferCount;
+    if (total > 0) {
+      const parts = [];
+      if (markerCount) parts.push(`\u6807\u7b54 ${markerCount}`);
+      if (inferCount) parts.push(`\u63a8\u65ad ${inferCount}`);
+      log(`📚 ${sourceLabel || "\u4f5c\u4e1a"}\u63d0\u4ea4\u540e\u5df2\u540c\u6b65 ${total} \u9898\u5230\u4e91\u7aef\u9898\u5e93\uff08${parts.join("\uff0c")}\uff09`, "info");
+    } else {
+      log(`[\u4f5c\u4e1a] ${sourceLabel || "\u4f5c\u4e1a"}\u63d0\u4ea4\u540e\u540c\u6b65\u9898\u5e93\uff1a\u672a\u53d1\u73b0\u53ef\u5199\u5165\uff08\u5171 ${questions.length} \u9898\uff09`, true);
+    }
+    return { marker: markerCount, infer: inferCount, total };
+  }
+
+  async function parseAssignmentPaperSourcesFromDetails(details) {
+    const sources = [];
+    const containers = [details];
+    if (details?.data && typeof details.data === "object") containers.push(details.data);
+    for (const container of containers) {
+      if (!container || typeof container !== "object") continue;
+      if (container.paperJson) {
+        try {
+          const decrypted = await _ad(String(container.paperJson || ""), "assignment_payload");
+          if (decrypted) {
+            const parsed = JSON.parse(decrypted);
+            if (parsed) sources.push(parsed);
+          }
+        } catch (_) {}
+      }
+      const sections = normalizePreviewPaperSections(container);
+      if (sections.length) sources.push(sections);
+    }
+    return sources;
+  }
+
+  async function saveAssignmentAnswersFromDetailsToCloud(details, sourceLabel) {
+    if (!details || typeof details !== "object") return 0;
+    const sources = await parseAssignmentPaperSourcesFromDetails(details);
+    if (!sources.length) {
+      log(`[\u4f5c\u4e1a] ${sourceLabel} \u65e0\u6cd5\u89e3\u6790 paperJson/paperList\uff0c\u8df3\u8fc7\u5165\u5e93`, true);
+      return 0;
+    }
+    for (const paper of sources) {
+      const questions = extractQuestionsFromPaperSections(paper);
+      if (!questions.length || !assignmentPaperHasParsedMarkers(questions)) continue;
+      const score = extractScoreFromAssignmentRecord(details);
+      const res = await saveQuestionsToCloudBank(questions, score != null ? score : details, sourceLabel);
+      if (res.total > 0) return res.total;
+    }
+    return 0;
+  }
+
+  async function saveAssignmentAnswersAfterSubmit(courseId, assignmentId, paperId, sourceLabel) {
+    const label = sourceLabel || "\u4f5c\u4e1a";
+    let saved = 0;
+    for (let attempt = 1; attempt <= ASSIGNMENT_POST_SUBMIT_SAVE_ATTEMPTS; attempt++) {
+      let preview = null;
+      if (paperId) {
+        preview = await previewAssignmentRecord(courseId, assignmentId, paperId);
+      }
+      if (!preview) {
+        preview = await loadAssignmentDetails(courseId, assignmentId, {
+          waitIfPaperGenerating: attempt <= 3,
+        });
+      }
+      if (preview) {
+        saved = await saveAssignmentAnswersFromDetailsToCloud(preview, label);
+        if (saved > 0) return saved;
+      }
+      if (attempt < ASSIGNMENT_POST_SUBMIT_SAVE_ATTEMPTS) {
+        const waitS =
+          ASSIGNMENT_POST_SUBMIT_SAVE_WAIT_MIN_S +
+          Math.random() * (ASSIGNMENT_POST_SUBMIT_SAVE_WAIT_MAX_S - ASSIGNMENT_POST_SUBMIT_SAVE_WAIT_MIN_S);
+        log(`[\u4f5c\u4e1a] ${label} \u9884\u89c8\u5c1a\u65e0\u6807\u7b54\uff0c${waitS.toFixed(1)}s \u540e\u91cd\u8bd5\u5165\u5e93\uff08${attempt}/${ASSIGNMENT_POST_SUBMIT_SAVE_ATTEMPTS}\uff09`, true);
+        await sleep(Math.round(waitS * 1000));
+      }
+    }
+    return saved;
   }
 
   function assignmentDetailsCacheKey(courseId, assignmentId) {
@@ -5294,6 +6555,7 @@ async function performFaceRecognition(courseId, resourceId, resType, options = {
       return null;
     }
     log(`✅ \u91cd\u505a\u540e\u5df2\u52a0\u8f7d\u4f5c\u4e1a\u8be6\u60c5\uff08paperJson.len=${String(details.paperJson || "").length}\uff09`, "info");
+    cacheAssignmentDetails(courseId, assignmentId, details);
     return details;
   }
 
@@ -5413,11 +6675,101 @@ async function performFaceRecognition(courseId, resourceId, resType, options = {
     return opts.some((o) => Number(o?.IsAnswer) === 1);
   }
 
+  /** 作业取答：云端内容答案→当前卷序号；兼容旧序号题库（对齐 user.js / py） */
+  async function getHomeworkQuestionAnswer(q, qType) {
+    const options = getQuestionOptions(q);
+    for (const text of buildQuestionLookupCandidates(q)) {
+      try {
+        const fromCloud = await _qg(text);
+        if (!fromCloud || fromCloud.answer == null || String(fromCloud.answer).trim() === "") continue;
+        const ans = normalizeCloudAnswer(fromCloud.answer, qType, options.length, q);
+        if (ans) return { answer: ans, src: "\u9898\u5e93" };
+      } catch (_) {}
+    }
+    const known = extractKnownAnswerFromQuestion(q, qType);
+    if (known) {
+      const resolved = resolveObjectiveBankAnswer(known, q, qType) || normalizeCloudAnswer(known, qType, options.length, q);
+      if (resolved) {
+        return {
+          answer: normalizeSubmitAnswerByType(resolved, qType, options.length),
+          src: "\u6807\u7b54",
+        };
+      }
+    }
+    return { answer: randomAnswerByType(q, qType), src: "\u968f\u673a" };
+  }
+
+  function questionIsSubjectiveHomework(q) {
+    const qt = resolveQuestionType(q);
+    if (qt === "essay" || qt === "wenda" || qt === "fill") return true;
+    return isAssignmentSubjective(q, resolveExamQuestionType(q));
+  }
+
+  async function buildHomeworkSubmitData(q, ruleId, sessionStats) {
+    let qType = resolveQuestionType(q);
+    if (qType === "unknown") qType = resolveExamQuestionType(q);
+    const qa = await getHomeworkQuestionAnswer(q, qType);
+    if (sessionStats) {
+      const qid = String(q?.Id || q?.id || "");
+      if (questionIsSubjectiveHomework(q)) {
+        sessionStats.hasSubjective = true;
+        if (qid) sessionStats.subjectiveSrcOk[qid] = qa.src === "\u9898\u5e93" || qa.src === "\u6807\u7b54";
+      } else {
+        sessionStats.objectiveTotal += 1;
+        if (qa.src === "\u9898\u5e93" || qa.src === "\u6807\u7b54") sessionStats.objectiveKnown += 1;
+      }
+    }
+    const opts = getQuestionOptions(q);
+    return {
+      id: q?.Id || q?.id,
+      studentAnswer: normalizeSubmitAnswerByType(String(qa.answer || ""), qType, opts.length),
+      ruleId: ruleId,
+      answerId: q?._parent_question_id || resolveAnswerId(q),
+      optionId: "00000000-0000-0000-0000-000000000000",
+      qType,
+      answerSrc: qa.src,
+    };
+  }
+
+  /** 本地组作业加密 payload（内容题库→序号→_bp），不依赖云端 prepare 是否已适配内容答案 */
+  async function buildHomeworkPayloadsLocally(questions, ruleId) {
+    const list = Array.isArray(questions) ? questions : [];
+    const payloads = [];
+    let bankHits = 0;
+    let markerHits = 0;
+    let guessHits = 0;
+    for (const q of list) {
+      if (!state.running) break;
+      const data = await buildHomeworkSubmitData(q, ruleId, null);
+      if (!data?.id || !data?.answerId) continue;
+      if (data.answerSrc === "\u9898\u5e93") bankHits += 1;
+      else if (data.answerSrc === "\u6807\u7b54") markerHits += 1;
+      else guessHits += 1;
+      try {
+        const enc = await _bp("assignment", {
+          id: data.id,
+          studentAnswer: data.studentAnswer,
+          ruleId: String(ruleId || ""),
+          answerId: data.answerId,
+          optionId: data.optionId,
+        });
+        if (enc) payloads.push({ encrypted_data: enc, answer_src: data.answerSrc });
+      } catch (_) {}
+    }
+    return {
+      payloads,
+      bank_hits: bankHits,
+      marker_hits: markerHits,
+      guess_hits: guessHits,
+      question_count: list.length,
+    };
+  }
+
   async function processAssignment(courseId, assignment) {
-    if (!state.running) return false;
+    if (!state.running) return { ok: false };
     const assignmentId = assignment?.assignmentId || assignment?.Id;
     const title = assignment?.title || assignment?.Title || "\u672a\u77e5\u4f5c\u4e1a";
-    if (!assignmentId) return false;
+    if (!assignmentId) return { ok: false };
     setCurrentHomework(title);
     log(`📝 \u6b63\u5728\u5904\u7406\u4f5c\u4e1a: ${title}`);
 
@@ -5431,20 +6783,29 @@ async function performFaceRecognition(courseId, resourceId, resType, options = {
     if (details?.error?.message) {
       log(`❌ \u4f5c\u4e1a load-assignment-record: ${details.error.message}`);
       log(`[\u4f5c\u4e1a] \u5e73\u53f0\u8fd4\u56de error\uff0c\u65e0 paperJson`, true);
-      return false;
+      return { ok: false };
     }
     if (!details) {
       log(`❌ \u4f5c\u4e1a\u8be6\u60c5\u8bf7\u6c42\u5931\u8d25\uff08\u65e0\u54cd\u5e94\uff09: ${title}`);
       setLastChapterDiag("\u4f5c\u4e1a\u8be6\u60c5\u65e0\u54cd\u5e94");
-      return false;
+      return { ok: false };
     }
     if (!ruleId || !details?.paperJson) {
       log(`❌ \u4f5c\u4e1a\u8be6\u60c5\u4e0d\u5b8c\u6574\uff0c\u8df3\u8fc7: ${title}\uff08ruleId=${ruleId ? "\u6709" : "\u65e0"} paperJson.len=${String(details?.paperJson || "").length}\uff09`);
       setLastChapterDiag("\u4f5c\u4e1a\u8be6\u60c5\u4e0d\u5b8c\u6574");
       log(`[\u4f5c\u4e1a] ruleId=${ruleId ? "\u6709" : "\u65e0"} paperJson.len=${String(details?.paperJson || "").length}`, true);
-      return false;
+      return { ok: false };
     }
+    const paperId = String(details?.paperId || details?.PaperId || "");
     log(`[\u4f5c\u4e1a] \u5df2\u52a0\u8f7d\u8bd5\u5377 paperJson.len=${String(details.paperJson || "").length} ruleId=${ruleId}`, true);
+
+    let assignmentQuestions = [];
+    try {
+      const decryptedQs = await _ad(String(details.paperJson || ""), "assignment_payload");
+      if (decryptedQs) {
+        assignmentQuestions = extractQuestionsFromPaperSections(JSON.parse(decryptedQs));
+      }
+    } catch (_) {}
 
     const needFace = details?.courseRule?.isNeedFaceVerification;
     if (needFace === true) {
@@ -5454,7 +6815,7 @@ async function performFaceRecognition(courseId, resourceId, resType, options = {
       });
       if (!faceOk) {
         log(`❌ \u4f5c\u4e1a\u4eba\u8138\u6838\u9a8c\u672a\u901a\u8fc7\uff0c\u8df3\u8fc7: ${title}`, "warn");
-        return false;
+        return { ok: false };
       }
     }
 
@@ -5465,7 +6826,7 @@ async function performFaceRecognition(courseId, resourceId, resType, options = {
       const capMb = (CLOUD_ASSIGNMENT_CIPHER_MAX_CHARS / (1024 * 1024)).toFixed(1);
       log(`⚠️ \u4f5c\u4e1a\u8bd5\u5377\u8fc7\u5927\uff08\u7ea6${mb}MB\uff0c\u4e91\u7aef\u4e0a\u9650${capMb}MB\uff09\uff0c\u8df3\u8fc7: ${title}`, "warn");
       setLastChapterDiag(`\u4f5c\u4e1a\u8bd5\u5377\u8fc7\u5927(\u7ea6${mb}MB)`);
-      return false;
+      return { ok: false };
     }
 
     const reloadMaxAttempts = 3;
@@ -5475,7 +6836,7 @@ async function performFaceRecognition(courseId, resourceId, resType, options = {
     for (let attempt = 1; attempt <= reloadMaxAttempts; attempt++) {
       if (!state.running) {
         log(`⏹️ \u5df2\u505c\u6b62\uff0c\u7ec8\u6b62\u4f5c\u4e1a\u5904\u7406: ${title}`);
-        return false;
+        return { ok: false };
       }
       try {
         const prep = await _pp(paperJson, ruleId, {
@@ -5503,7 +6864,7 @@ async function performFaceRecognition(courseId, resourceId, resType, options = {
         if (/payload_too_large/i.test(em)) {
           log(`❌ \u4f5c\u4e1a\u8bd5\u5377\u8d85\u8fc7\u4e91\u7aef\u89e3\u6790\u4e0a\u9650\uff0c\u8df3\u8fc7: ${title}`);
           setLastChapterDiag("\u4f5c\u4e1a\u8bd5\u5377\u8d85\u8fc7\u4e91\u7aef\u4e0a\u9650");
-          return false;
+          return { ok: false };
         }
         log(`❌ \u4f5c\u4e1a\u4e91\u7aef\u89e3\u6790\u5931\u8d25\uff08\u7b2c${attempt}\u6b21\uff09: ${em}`);
       }
@@ -5535,42 +6896,67 @@ async function performFaceRecognition(courseId, resourceId, resType, options = {
     }
 
     if (!usedPlatformAnswers && !paperPayloads.length) {
+      // 优先本地：题库内容/旧序号 → 当前卷序号 → _bp（云端 prepare 未必已适配内容答案）
       try {
-        const prepBank = await _pp(paperJson, ruleId, {
-          requireAnswers: false,
-          answerSource: "bank",
-        });
-        paperPayloads = Array.isArray(prepBank?.payloads) ? prepBank.payloads : [];
-        const bankHits = Number(prepBank?.bank_hits || 0);
-        const guessHits = Number(prepBank?.guess_hits || 0);
-        lastPrepDiag = `bank payloads=${paperPayloads.length} bank_hits=${bankHits} guess_hits=${guessHits} q=${Number(prepBank?.question_count || 0)}`;
-        log(`[\u4f5c\u4e1a] \u4e91\u7aef prepare \u9898\u5e93: ${lastPrepDiag}`, true);
-        if (bankHits > 0) log(`📚 \u9898\u5e93\u547d\u4e2d ${bankHits} \u9898\uff0c\u5176\u4f59 ${guessHits} \u9898\u968f\u673a/\u9ed8\u8ba4`, "info");
-        else if (paperPayloads.length) log(`🎲 \u9898\u5e93\u672a\u547d\u4e2d\uff0c\u5168\u90e8\u6309\u968f\u673a/\u9ed8\u8ba4\u7b54\u6848\u63d0\u4ea4\uff08${guessHits} \u9898\uff09`, "info");
-        if (!paperPayloads.length) {
-          const prepGuess = await _pp(paperJson, ruleId, {
-            requireAnswers: false,
-            answerSource: "guess",
-          });
-          paperPayloads = Array.isArray(prepGuess?.payloads) ? prepGuess.payloads : [];
-          lastPrepDiag = `guess payloads=${paperPayloads.length} q=${Number(prepGuess?.question_count || 0)}`;
-          log(`[\u4f5c\u4e1a] \u4e91\u7aef prepare \u968f\u673a: ${lastPrepDiag}`, true);
+        if (assignmentQuestions.length) {
+          const local = await buildHomeworkPayloadsLocally(assignmentQuestions, ruleId);
+          paperPayloads = Array.isArray(local?.payloads) ? local.payloads : [];
+          const bankHits = Number(local?.bank_hits || 0);
+          const markerHits = Number(local?.marker_hits || 0);
+          const guessHits = Number(local?.guess_hits || 0);
+          lastPrepDiag = `local payloads=${paperPayloads.length} bank=${bankHits} marker=${markerHits} guess=${guessHits} q=${Number(local?.question_count || 0)}`;
+          log(`[\u4f5c\u4e1a] \u672c\u5730\u9898\u5e93/\u6807\u7b54: ${lastPrepDiag}`, true);
+          if (bankHits > 0 || markerHits > 0) {
+            log(
+              `📚 \u4f5c\u4e1a\u672c\u5730\u547d\u4e2d \u9898\u5e93${bankHits}/\u6807\u7b54${markerHits}\u9898\uff0c\u968f\u673a ${guessHits} \u9898`,
+              "info",
+            );
+          } else if (paperPayloads.length) {
+            log(`🎲 \u4f5c\u4e1a\u9898\u5e93\u672a\u547d\u4e2d\uff0c\u672c\u5730\u968f\u673a/\u9ed8\u8ba4 ${guessHits} \u9898`, "info");
+          }
         }
       } catch (e) {
-        log(`❌ \u4f5c\u4e1a\u9898\u5e93/\u968f\u673a prepare \u5931\u8d25: ${(e && e.message) || e}`);
+        log(`⚠️ \u4f5c\u4e1a\u672c\u5730\u9898\u5e93\u7ec4\u5305\u5931\u8d25: ${(e && e.message) || e}`);
+      }
+      // 兜底：仍尝试云端 bank/guess（旧逻辑）
+      if (!paperPayloads.length) {
+        try {
+          const prepBank = await _pp(paperJson, ruleId, {
+            requireAnswers: false,
+            answerSource: "bank",
+          });
+          paperPayloads = Array.isArray(prepBank?.payloads) ? prepBank.payloads : [];
+          const bankHits = Number(prepBank?.bank_hits || 0);
+          const guessHits = Number(prepBank?.guess_hits || 0);
+          lastPrepDiag = `bank payloads=${paperPayloads.length} bank_hits=${bankHits} guess_hits=${guessHits} q=${Number(prepBank?.question_count || 0)}`;
+          log(`[\u4f5c\u4e1a] \u4e91\u7aef prepare \u9898\u5e93: ${lastPrepDiag}`, true);
+          if (!paperPayloads.length) {
+            const prepGuess = await _pp(paperJson, ruleId, {
+              requireAnswers: false,
+              answerSource: "guess",
+            });
+            paperPayloads = Array.isArray(prepGuess?.payloads) ? prepGuess.payloads : [];
+            lastPrepDiag = `guess payloads=${paperPayloads.length} q=${Number(prepGuess?.question_count || 0)}`;
+            log(`[\u4f5c\u4e1a] \u4e91\u7aef prepare \u968f\u673a: ${lastPrepDiag}`, true);
+          }
+        } catch (e) {
+          log(`❌ \u4f5c\u4e1a\u9898\u5e93/\u968f\u673a prepare \u5931\u8d25: ${(e && e.message) || e}`);
+        }
       }
       if (!paperPayloads.length) {
         log(`❌ \u4f5c\u4e1a\u672a\u83b7\u53d6\u5230\u53ef\u63d0\u4ea4\u9898\u76ee\uff08\u5df2\u91cd\u8bd5${reloadMaxAttempts}\u6b21\u4e14\u9898\u5e93/\u968f\u673a\u5931\u8d25\uff09: ${title}\uff1b${lastPrepDiag || ""}`);
         setLastChapterDiag("\u4f5c\u4e1a\u65e0\u6807\u51c6\u7b54\u6848\u4e14\u9898\u5e93\u5931\u8d25");
-        return false;
+        return { ok: false };
       }
     }
 
     if (!paperPayloads.length) {
       log(`❌ \u4f5c\u4e1a\u65e0\u9898\u76ee\uff0c\u8df3\u8fc7: ${title}\uff1b${lastPrepDiag || ""}`);
       setLastChapterDiag("\u4f5c\u4e1a\u65e0\u9898\u76ee");
-      return false;
+      return { ok: false };
     }
+
+    const assignmentSession = await buildAssignmentSessionFromQuestions(assignmentQuestions, usedPlatformAnswers);
 
     const assignmentOpenedAt = Date.now();
     let okCount = 0;
@@ -5579,7 +6965,7 @@ async function performFaceRecognition(courseId, resourceId, resType, options = {
     for (let i = 0; i < totalItems; i++) {
       if (!state.running) {
         log(`⏹️ \u5df2\u505c\u6b62\uff0c\u7ec8\u6b62\u4f5c\u4e1a\u7b54\u9898: ${title}`);
-        return false;
+        return { ok: false };
       }
       setHomeworkProgress(i + 1, totalItems);
       let encrypted = "";
@@ -5589,7 +6975,7 @@ async function performFaceRecognition(courseId, resourceId, resType, options = {
       let questionSubmitOk = false;
       let lastResp = null;
       for (let attempt = 0; attempt <= homeworkSubmitMaxRetries; attempt++) {
-        if (!state.running) return false;
+        if (!state.running) return { ok: false };
         lastResp = await submitPaperAnswerEncrypted(encrypted);
         if (lastResp && lastResp.ok) {
           questionSubmitOk = true;
@@ -5626,51 +7012,207 @@ async function performFaceRecognition(courseId, resourceId, resType, options = {
           if (raw) log(`📥 submit-paper-answer body: ${raw.slice(0, 600)}`);
         }
       }
-      if (!state.running) return false;
+      if (!state.running) return { ok: false };
       await sleep(3000 + Math.random() * 500);
     }
     if (okCount <= 0) {
       log(`❌ \u4f5c\u4e1a\u7b54\u9898\u63d0\u4ea4\u5931\u8d25: ${title}`, "warn");
-      return false;
+      return { ok: false };
     }
     const minMsBeforeFinalSubmit = 30 * 1000;
     const elapsed = Date.now() - assignmentOpenedAt;
     if (elapsed < minMsBeforeFinalSubmit) {
       await sleep(minMsBeforeFinalSubmit - elapsed);
     }
-    if (!state.running) return false;
+    if (!state.running) return { ok: false };
     const finalOk = await submitOnlineAssignment(courseId, assignmentId);
     log(finalOk ? `✅ \u4f5c\u4e1a\u5df2\u4ea4\u5377: ${title}` : `❌ \u4f5c\u4e1a\u4ea4\u5377\u5931\u8d25: ${title}`, finalOk ? "info" : "warn");
-    if (finalOk && !usedPlatformAnswers) {
+    if (finalOk) {
       await sleep(2000);
       try {
-        await syncAssignmentPaperToCloudBank(courseId, assignmentId);
+        await saveAssignmentAnswersAfterSubmit(courseId, assignmentId, paperId, `\u4f5c\u4e1a\u3010${title}\u3011`);
       } catch (e) {
         log(`⚠️ \u4f5c\u4e1a\u63d0\u4ea4\u540e\u540c\u6b65\u9898\u5e93\u5931\u8d25: ${(e && e.message) || e}`, "warn");
       }
     }
     setHomeworkProgress(totalItems, totalItems);
-    return !!finalOk;
+    return {
+      ok: !!finalOk,
+      session: assignmentSession,
+      questions: assignmentQuestions,
+      paperId,
+      usedPlatformAnswers,
+    };
+  }
+
+  function notifyAssignmentRefreshForFullScore(assignmentName, score, redoCount, maxRedo) {
+    const sc =
+      typeof score === "number" && Number.isFinite(score) ? String(score) : "\u672a\u77e5";
+    const tip =
+      `\u4f5c\u4e1a\u300c${assignmentName}\u300d\u5df2\u91cd\u505a ${redoCount}/${maxRedo} \u6b21\u4ecd\u672a\u6ee1\u5206 100\uff08\u5f53\u524d ${sc} \u5206\uff09\u3002` +
+      `\u60f3\u7ee7\u7eed\u51b2\u6ee1\u5206\uff0c\u8bf7\u5237\u65b0\u9875\u9762\u540e\u7ee7\u7eed\u5904\u7406\u4f5c\u4e1a\u3002`;
+    try {
+      showPanelNotice(tip, "info", false, 16000);
+    } catch (_) {}
+    // 提示刷新冲满分，用 info，不当失败
+    log(`💡 ${tip}`, "info");
+  }
+
+  async function processOneListAssignment(courseId, assignment, meta = {}) {
+    if (!state.running) return false;
+    const assignmentId = assignment?.assignmentId || assignment?.Id;
+    const assignmentName = assignment?.title || assignment?.Title || "\u672a\u77e5\u4f5c\u4e1a";
+    if (!courseId || !assignmentId) return true;
+
+    const listScore = Number(assignment?.score || 0);
+    const st = assignment?.state;
+    const fullTarget = ASSIGNMENT_FULL_SCORE;
+    const maxRedo = ASSIGNMENT_MAX_REDO_COUNT;
+    const idx = Number(meta.index || 0);
+    const total = Number(meta.total || 0);
+    const posLabel = idx > 0 && total > 0 ? `\uff08${idx}/${total}\uff09` : "";
+
+    let redoCount = Number(state.assignmentRedoCount[assignmentId] || 0);
+    if (redoCount >= maxRedo) {
+      notifyAssignmentRefreshForFullScore(assignmentName, listScore, redoCount, maxRedo);
+      return "need_refresh";
+    }
+
+    log(
+      `\n===== \u4f5c\u4e1a: ${assignmentName}${posLabel}\uff08state=${st}\uff0c\u5217\u8868\u5206\u6570=${listScore}\uff0c\u76ee\u6807=${fullTarget}\uff0c\u6700\u591a\u91cd\u505a ${maxRedo} \u6b21\uff09=====`,
+      "info",
+    );
+
+    // 含主观题且客观已实际全对、主观可题库/标答时，平台往往给不满 100，才允许早退；
+    // 仅有预览标答字段但客观未答对（如 31/77 分）必须继续重做，不能当达标跳过。
+    if (
+      (st === 1 || st === 2) &&
+      listScore < fullTarget &&
+      (await assignmentMeetsQualityPassPolicy(courseId, assignmentId))
+    ) {
+      log(
+        `✅ \u4f5c\u4e1a ${assignmentName} \u5f53\u524d ${listScore} \u5206\uff0c\u5ba2\u89c2\u5df2\u5168\u5bf9\u4e14\u4e3b\u89c2\u9898\u5747\u53ef\u9898\u5e93/\u6807\u7b54\uff0c\u89c6\u4e3a\u8fbe\u6807`,
+        "info",
+      );
+      return true;
+    }
+
+    const doRedo = async (reason) => {
+      if (redoCount >= maxRedo) return "need_refresh";
+      log(`🔄 \u4f5c\u4e1a ${assignmentName} ${reason}\uff0c\u7b2c ${redoCount + 1}/${maxRedo} \u6b21\u91cd\u505a`, "info");
+      invalidateAssignmentDetailsCache(courseId, assignmentId);
+      if (!(await redoAssignment(courseId, assignmentId))) {
+        log(`❌ \u4f5c\u4e1a\u91cd\u505a(redo-assignment)\u5931\u8d25: ${assignmentName}`, "warn");
+        return false;
+      }
+      redoCount += 1;
+      state.assignmentRedoCount[assignmentId] = redoCount;
+      await sleep(ASSIGNMENT_REDO_POST_WAIT_MS + Math.round(Math.random() * 600));
+      const reloaded = await loadAssignmentDetails(courseId, assignmentId, { waitIfPaperGenerating: true });
+      if (!reloaded?.paperJson) {
+        log(`❌ \u91cd\u505a\u540e\u52a0\u8f7d\u4f5c\u4e1a\u8be6\u60c5\u5931\u8d25: ${assignmentName}`, "warn");
+        return false;
+      }
+      cacheAssignmentDetails(courseId, assignmentId, reloaded);
+      return true;
+    };
+
+    if ((st === 1 || st === 2) && listScore < fullTarget) {
+      const redoRes = await doRedo(`\u5217\u8868\u5206\u6570 ${listScore} < ${fullTarget}`);
+      if (redoRes === "need_refresh") {
+        notifyAssignmentRefreshForFullScore(assignmentName, listScore, redoCount, maxRedo);
+        return "need_refresh";
+      }
+      if (!redoRes) return false;
+    }
+
+    while (state.running) {
+      const submitOut = await processAssignment(courseId, assignment);
+      if (!submitOut?.ok) {
+        log(`❌ \u4f5c\u4e1a ${assignmentName} \u63d0\u4ea4\u5931\u8d25`, "warn");
+        return false;
+      }
+
+      const finalScore = await getAssignmentScore(courseId, assignmentId, 3);
+      if (typeof finalScore === "number" && Number.isFinite(finalScore)) {
+        log(`📊 \u4f5c\u4e1a ${assignmentName} \u63d0\u4ea4\u540e\u5206\u6570\uff1a${finalScore}`, "info");
+      } else {
+        log(`⚠️ \u4f5c\u4e1a ${assignmentName} \u63d0\u4ea4\u5b8c\u6210\u4f46\u6682\u672a\u67e5\u5230\u5206\u6570`, "info");
+      }
+
+      const previewQuestions = submitOut.questions || submitOut.session?.questions || [];
+      let policyQuestions = previewQuestions;
+      try {
+        const preview = await previewAssignmentRecord(courseId, assignmentId, submitOut.paperId);
+        if (preview) {
+          const sources = await parseAssignmentPaperSourcesFromDetails(preview);
+          for (const paper of sources) {
+            const qs = extractQuestionsFromPaperSections(paper);
+            if (qs.length) {
+              policyQuestions = qs;
+              break;
+            }
+          }
+        }
+      } catch (_) {}
+      const policy = evaluateAssignmentRedoPolicy(
+        finalScore,
+        redoCount,
+        submitOut.session,
+        policyQuestions,
+      );
+      if (policy.passed) {
+        log(`✅ \u4f5c\u4e1a ${assignmentName} \u8fbe\u6807\uff1a${policy.detail}`, "info");
+        return true;
+      }
+      if (policy.needRedo && redoCount < maxRedo) {
+        const redoRes = await doRedo(policy.detail);
+        if (redoRes === "need_refresh") {
+          notifyAssignmentRefreshForFullScore(assignmentName, finalScore, redoCount, maxRedo);
+          return "need_refresh";
+        }
+        if (!redoRes) return false;
+        continue;
+      }
+      if (redoCount >= maxRedo) {
+        notifyAssignmentRefreshForFullScore(assignmentName, finalScore, redoCount, maxRedo);
+        return "need_refresh";
+      }
+      // 未达满分但暂不重做（如暂无分数）：不当失败，继续后续作业
+      log(`ℹ️ \u4f5c\u4e1a ${assignmentName}\uff1a${policy.detail}`, "info");
+      return true;
+    }
+    return false;
   }
 
   function resolveExamQuestionType(q) {
     const opts = Array.isArray(q?.CourseQuestionOptionList) ? q.CourseQuestionOptionList : [];
-    const typeNameRaw = String(q?.TypeName || q?.QuestionTypeName || "");
-    const titleText = stripHtmlText(String(q?.Title || q?.title || ""));
-    const contentText = stripHtmlText(String(q?.Content || q?.content || ""));
-    const mergedText = `${typeNameRaw}|${titleText}|${contentText}`.toLowerCase();
+    const typeNameRaw = String(q?.TypeName || q?.QuestionTypeName || q?._sectionTypeName || "");
+    const n = typeNameRaw.toLowerCase();
+    const t = Number(q?.Type || 0);
 
-    if (/(\u95ee\u7b54|\u7b80\u7b54|\u8bba\u8ff0|\u4e3b\u89c2|\u7b80\u8ff0|\u9610\u8ff0|\u5206\u6790|\u8c08\u8c08|\u8bd5\u8ff0|\u6848\u4f8b)/i.test(mergedText)) {
+    // 1) 平台 Type / 题型名优先（客观题绝不能被题干里的「分析/案例」误判成简答）
+    // TMLX：1单选 2多选 3判断 6翻译 7问答 8阅读 9完形 12填空
+    if (t === 1 || n.includes("\u5355\u9009")) return "single";
+    if (t === 2 || n.includes("\u591a\u9009")) return "multiple";
+    if (t === 3 || n.includes("\u5224\u65ad")) return "judge";
+    if (t === 6 || n.includes("\u7ffb\u8bd1")) return "single";
+    if (t === 4 || t === 12 || n.includes("\u586b\u7a7a")) return "fill";
+    if (t === 7 || n.includes("\u95ee\u7b54")) return "essay";
+    if (t === 5 || n.includes("\u7b80\u7b54") || n.includes("\u8bba\u8ff0") || n.includes("\u4e3b\u89c2")) return "essay";
+    if (t === 9 || n.includes("\u5b8c\u5f62")) return "single";
+    if (t === 8 || n.includes("\u9605\u8bfb")) {
+      const sub = q?.CourseSubQuestionList;
+      if (Array.isArray(sub) && sub.length) return "reading";
+      if (n.includes("\u5b50\u9898")) return "single";
+    }
+
+    // 2) 仅题型名像主观（不扫题干正文，避免「请分析下列…」单选题误伤）
+    if (/(\u95ee\u7b54|\u7b80\u7b54|\u8bba\u8ff0|\u4e3b\u89c2|\u7b80\u8ff0|\u9610\u8ff0|\u8bd5\u8ff0)/i.test(n)) {
       return "essay";
     }
 
-    if (!opts.length) {
-      const t0 = Number(q?.Type || 0);
-      if (t0 === 4) return "fill";
-      if (t0 === 3) return "judge";
-      return "essay";
-    }
-
+    // 3) 有选项：按选项形态兜底
     if (opts.length === 2) {
       const t0 = stripHtmlText(String(opts[0]?.Content ?? opts[0]?.OptionContent ?? opts[0]?.Title ?? opts[0]?.Text ?? "")).trim();
       const t1 = stripHtmlText(String(opts[1]?.Content ?? opts[1]?.OptionContent ?? opts[1]?.Title ?? opts[1]?.Text ?? "")).trim();
@@ -5678,14 +7220,17 @@ async function performFaceRecognition(courseId, resourceId, resType, options = {
       if (/(\u6b63\u786e|\u5bf9)\s*\|/.test(s) && /(\||)\s*(\u9519\u8bef|\u9519)/.test(s)) return "judge";
       if (/^(\u6b63\u786e|\u5bf9)\|/.test(s) && /(\u9519\u8bef|\u9519)$/.test(s)) return "judge";
     }
+    if (opts.length >= 3) return "single";
+    if (opts.length > 0) return "single";
 
-    const t = Number(q?.Type || 0);
-    const n = typeNameRaw.toLowerCase();
-    if (t === 1 || t === 6 || n.includes("\u5355\u9009") || n.includes("\u7ffb\u8bd1")) return "single";
-    if (t === 2 || n.includes("\u591a\u9009")) return "multiple";
-    if (t === 3 || n.includes("\u5224\u65ad")) return "judge";
-    if (t === 4 || n.includes("\u586b\u7a7a")) return "fill";
-    if (t === 5 || n.includes("\u7b80\u7b54") || n.includes("\u8bba\u8ff0") || n.includes("\u95ee\u7b54") || n.includes("\u4e3b\u89c2")) return "essay";
+    // 4) 无选项且 Type 未知：才按正文启发判主观
+    const titleText = stripHtmlText(String(q?.Title || q?.title || ""));
+    const contentText = stripHtmlText(String(q?.Content || q?.content || ""));
+    const body = `${titleText}|${contentText}`;
+    if (/(\u95ee\u7b54|\u7b80\u7b54|\u8bba\u8ff0|\u4e3b\u89c2|\u7b80\u8ff0|\u9610\u8ff0|\u8c08\u8c08|\u8bd5\u8ff0)/i.test(body)) {
+      return "essay";
+    }
+    if (body.length > 60) return "essay";
     return "unknown";
   }
 
@@ -5744,28 +7289,70 @@ async function performFaceRecognition(courseId, resourceId, resType, options = {
     return s;
   }
 
+  async function getExamQuestionAnswer(q, qType) {
+    const options = getQuestionOptions(q);
+    // 与 py / user.js 一致：云端命中后 answer=可提交序号，bankAnswer 保留原始内容（数组/正文）供展示与回写
+    const lookups = [buildLegacyExamQuestionText(q)].filter(Boolean);
+    for (const lookup of lookups) {
+      const fromCloud = await _qg(lookup);
+      if (!fromCloud || fromCloud.answer == null || String(fromCloud.answer).trim() === "") continue;
+      const ans = normalizeCloudAnswer(fromCloud.answer, qType, options.length, q);
+      if (!ans) continue;
+      log(`☁️ \u8003\u8bd5\u9898\u5e93\u547d\u4e2d\uff08${qType}\uff09\u2192 ${ans}`);
+      return { answer: ans, bankAnswer: fromCloud.answer, bankHash: String(fromCloud.questionHash || "") };
+    }
+    const fromAi = await deepseekAnswerExamQuestion(q, qType);
+    if (fromAi) {
+      log(`🤖 DeepSeek \u547d\u4e2d\uff08${qType}\uff09`);
+      return { answer: fromAi, bankAnswer: fromAi, bankHash: "ai:deepseek" };
+    }
+    // 不使用试卷 known 直接作答（known 仅缓存入库），与 py 一致
+    const fallback = randomAnswerByType(q, qType);
+    return { answer: fallback, bankAnswer: "", bankHash: "" };
+  }
+
   async function buildExamSubmitData(q, ruleId) {
-    const res = await _ra(q, ruleId);
-      const r = res?.result || {};
-      const sp = res?.submit_payload || {};
-      const enc = String(sp?.encrypted_data || "");
-      const qType = String(r.q_type || resolveExamQuestionType(q));
-      const opts = Array.isArray(q?.CourseQuestionOptionList) ? q.CourseQuestionOptionList : [];
-      const studentAnswer = normalizeSubmitAnswerByType(String(r.answer || ""), qType, opts.length);
-      return {
+    const qType = resolveExamQuestionType(q);
+    const qa = await getExamQuestionAnswer(q, qType);
+    const opts = getQuestionOptions(q);
+    const studentAnswer = normalizeSubmitAnswerByType(String(qa?.answer || ""), qType, opts.length);
+    let optionId = "00000000-0000-0000-0000-000000000000";
+    if (qType === "single") {
+      const idx = Number(String(studentAnswer || "1").split(",")[0]);
+      const pick = optionAtSubmitIndex(opts, idx);
+      if (pick) optionId = String(pick.Id || pick.id || optionId);
+    }
+    // 回写/展示用：客观题统一成选项内容；提交仍用 studentAnswer 序号
+    let bankForStore = qa?.bankAnswer;
+    if (qType === "single" || qType === "multiple" || qType === "judge") {
+      bankForStore = canonicalizeObjectiveAnswerForBank(qa?.bankAnswer || studentAnswer, q, qType);
+    }
+    let enc = "";
+    const rid = String(ruleId || "");
+    if (rid) {
+      enc = await _bp("assignment", {
         id: q?.Id,
         studentAnswer,
-        ruleId: ruleId,
+        ruleId: rid,
         answerId: q?._parent_question_id || resolveAnswerId(q),
-        optionId: String(r.option_id || "00000000-0000-0000-0000-000000000000"),
-        questionType: (qType === "single" ? 1 : qType === "multiple" ? 2 : qType === "judge" ? 3 : qType === "fill" ? 4 : qType === "essay" ? 5 : 0),
-        optionCount: opts.length,
-        qType,
-        bankAnswer: String(r.bank_answer || ""),
-        bankHash: String(r.bank_hash || ""),
-        _cloudEncrypted: enc,
-      };
+        optionId,
+      });
     }
+    return {
+      id: q?.Id,
+      studentAnswer,
+      ruleId: rid,
+      answerId: q?._parent_question_id || resolveAnswerId(q),
+      optionId,
+      // 平台提交题型号：填空=12、问答=7（essay 也按问答提交，对齐 py）
+      questionType: (qType === "single" ? 1 : qType === "multiple" ? 2 : qType === "judge" ? 3 : qType === "fill" ? 12 : (qType === "essay" || qType === "wenda") ? 7 : 0),
+      optionCount: opts.length,
+      qType,
+      bankAnswer: Array.isArray(bankForStore) ? JSON.stringify(bankForStore) : String(bankForStore || ""),
+      bankHash: String(qa?.bankHash || ""),
+      _cloudEncrypted: enc,
+    };
+  }
 
   async function processCourseHomework(courseId, courseTitle) {
     if (!state.running) return false;
@@ -5804,19 +7391,16 @@ async function performFaceRecognition(courseId, resourceId, resType, options = {
         const a = targets[ai];
         const aTitle = a?.title || a?.Title || "\u672a\u77e5\u4f5c\u4e1a";
         setCurrentHomework(`${aTitle} (${ai + 1}/${targets.length})`);
-        const st = a?.state;
-        const score = Number(a?.score || 0);
-        if ((st === 1 || st === 2) && score < 100) {
-          await redoAssignmentAndLoadDetails(courseId, a?.assignmentId || a?.Id);
-          if (!state.running) return false;
-        }
-        const ok = await processAssignment(courseId, a);
-        if (ok) {
+        const ok = await processOneListAssignment(courseId, a, { index: ai + 1, total: targets.length });
+        if (ok === true) {
           state.homeworkDoneAssignments += 1;
+        } else if (ok === "need_refresh") {
+          // 已面板/日志提示刷新冲满分，不当失败，继续后续作业
         } else {
           log(`❌ \u4f5c\u4e1a\u5904\u7406\u5931\u8d25: ${aTitle}`);
         }
         updateQueueSummary();
+        await sleep(3000 + Math.random() * 2000);
       }
       setCurrentHomework("\u4f5c\u4e1a\u5904\u7406\u5b8c\u6210");
       setHomeworkProgress(0, 0);
@@ -9010,9 +10594,10 @@ async function performFaceRecognition(courseId, resourceId, resType, options = {
                 const existed = await _qg(legacyText);
                 if (existed && existed.answer) continue;
                 const optionLen = Array.isArray(q?.CourseQuestionOptionList) ? q.CourseQuestionOptionList.length : 0;
-                const normalized = normalizeCloudAnswer(studentAnsRaw, qt, optionLen);
+                const normalized = normalizeCloudAnswer(studentAnsRaw, qt, optionLen, q);
                 if (!normalized) continue;
-                const ok3 = await _qu(legacyText, qt, normalized, "exam_score_infer");
+                const toStore = canonicalizeObjectiveAnswerForBank(normalized, q, qt);
+                const ok3 = await _qu(legacyText, qt, toStore, "exam_score_infer");
                 if (ok3) cachedToCloudCount += 1;
               }
             }
@@ -9031,7 +10616,7 @@ async function performFaceRecognition(courseId, resourceId, resType, options = {
               bankHash = String(submitData?.bankHash || "");
             } else {
               const qt = resolveExamQuestionType(q);
-              const qaRes = await _ra(q, ""); const qa = { answer: qaRes?.result?.answer, bankAnswer: qaRes?.result?.bank_answer, bankHash: qaRes?.result?.bank_hash };
+              const qa = await getExamQuestionAnswer(q, qt);
               bank = String(qa?.bankAnswer || "");
               bankHash = String(qa?.bankHash || "");
             }
@@ -9142,7 +10727,7 @@ async function performFaceRecognition(courseId, resourceId, resType, options = {
   try { installExamRouteHookOnce(); } catch (_) {}
 
   async function init() {
-
+    ensurePlatformNoticeDismissWatcher();
     createPanel();
     applyUiByRoute();
     ensureUiRouteSyncWatcher();
@@ -9189,9 +10774,20 @@ async function performFaceRecognition(courseId, resourceId, resType, options = {
     if (state.faceCapturedThisRun) updateStatus("\u5c31\u7eea");
   }
 
+  /* document-start：尽早标记公告已读并尝试关闭刷课规范 / 切换学校弹窗 */
+  try {
+    markPlatformNoticeRead();
+    dismissPlatformNoticeDialog();
+    dismissSchoolSwitchDialog();
+  } catch (_) {}
+
   if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", init);
+    document.addEventListener("DOMContentLoaded", () => {
+      ensurePlatformNoticeDismissWatcher();
+      init();
+    });
   } else {
+    ensurePlatformNoticeDismissWatcher();
     init();
   }
 })();
